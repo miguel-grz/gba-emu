@@ -18,7 +18,7 @@ polished, modern UI.
 | 4 | Sprites (OBJ — regular, 4/8bpp, flip, 1D/2D mapping, priority) | ✅ done |
 | 6 | DMA (4 channels) + timers (4, cascade) + interrupt wiring | ✅ done |
 | 5 | Bitmap modes, affine BGs/sprites, mosaic, windows, alpha blending | ✅ done |
-| 7 | APU | — |
+| 7 | APU — 4 PSG channels ✅; Direct Sound (DMA PCM) pending | 🚧 partial |
 | 8 | Tauri shell + UI | — |
 
 ## Layout
@@ -35,6 +35,7 @@ core/
 │   ├── ppu.rs          # PPU: text backgrounds + sprites + display timing/IRQs
 │   ├── dma.rs          # 4-channel DMA controller
 │   ├── timers.rs       # 4 hardware timers (prescaler + cascade)
+│   ├── apu.rs          # audio: 4 PSG channels, mixing, sample buffer
 │   ├── timing.rs       # waitstate / S-N cycle model
 │   ├── bios.rs         # BIOS SWI handling (HLE routines + LLE fallback)
 │   ├── system.rs       # Gba: CPU + memory + PPU + DMA + timers, run_frame loop
@@ -45,7 +46,8 @@ core/
     ├── cpu_test.rs     # hand-assembled instruction tests + headless ROM harness
     ├── bus_test.rs     # I/O, timing, BIOS HLE, open bus, interrupts/halt
     ├── ppu_test.rs     # PPU registers, display timing/IRQs, text + sprite rendering
-    └── system_test.rs  # DMA channels, timers, and their interrupts
+    ├── system_test.rs  # DMA channels, timers, and their interrupts
+    └── apu_test.rs     # PSG channels, mixing, and the sample stream
 ```
 
 ## Seeing the PPU work
@@ -142,6 +144,20 @@ via `Memory::load_bios`.
   which a later optimization pass can trim if needed.
 - Affine-sprite mosaic is applied in texture space (a close approximation of
   hardware's screen-space mosaic).
+
+## Accuracy notes (Phase 7 trade-offs)
+
+- **Done (part A)**: the four PSG channels — two square (channel 1 with
+  frequency sweep), the wave channel, and the noise LFSR — each with volume
+  envelope and length counter, clocked by a 512 Hz frame sequencer, mixed to
+  stereo per SOUNDCNT_L/H and resampled to 32768 Hz into a sample buffer the
+  frontend will drain into `cpal`.
+- **Pending (part B)**: Direct Sound — the two DMA-fed 8-bit PCM FIFOs clocked
+  by a timer overflow. This is what most commercial games actually use for
+  music, and it wires into the "special" DMA start-timing left from Phase 6.
+- Mixing levels are a reasonable approximation, not calibrated against
+  hardware's exact DAC/SOUNDBIAS response; there is no audio output to
+  calibrate against until the Phase 8 frontend.
 - **Still stubbed**: cartridge SRAM/Flash/EEPROM saves read as 0, and BIOS
   read-protection is not enforced. Neither affects CPU test ROMs.
 

@@ -54,4 +54,9 @@ impl Gba {
     pub fn framebuffer(&self) -> &[u16] {
         self.mem.framebuffer()
     }
+
+    /// Take the accumulated stereo audio samples (interleaved L/R, i16).
+    pub fn drain_samples(&mut self) -> Vec<i16> {
+        self.mem.drain_samples()
+    }
 }

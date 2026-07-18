@@ -12,6 +12,7 @@
 //! BIOS region reads as its last fetched opcode unless the CPU is executing
 //! from it). Neither is needed to run CPU test ROMs.
 
+use crate::apu::Apu;
 use crate::dma::{self, cnt, Dma};
 use crate::io::{irq, Io};
 use crate::ppu::Ppu;
@@ -20,9 +21,11 @@ use crate::timing::{access_cycles, Region, SeqTracker, Width};
 use crate::CoreError;
 use std::path::Path;
 
-/// I/O sub-block boundaries within 0x0400_0000. Offsets outside the PPU/DMA/
-/// timer ranges fall through to [`Io`] (interrupt controller, WAITCNT, …).
+/// I/O sub-block boundaries within 0x0400_0000. Offsets outside the PPU/sound/
+/// DMA/timer ranges fall through to [`Io`] (interrupt controller, WAITCNT, …).
 const PPU_REG_END: u32 = 0x60;
+const SOUND_REG_START: u32 = 0x60;
+const SOUND_REG_END: u32 = 0xA8;
 const DMA_REG_START: u32 = 0xB0;
 const DMA_REG_END: u32 = 0xE0;
 const TIMER_REG_START: u32 = 0x100;
@@ -101,6 +104,7 @@ pub struct Memory {
     rom: Vec<u8>,
     io: Io,
     ppu: Ppu,
+    apu: Apu,
     dma: Dma,
     timers: Timers,
     has_bios: bool,
@@ -131,6 +135,7 @@ impl Memory {
             rom,
             io: Io::new(),
             ppu: Ppu::new(),
+            apu: Apu::new(),
             dma: Dma::new(),
             timers: Timers::new(),
             has_bios: false,
@@ -173,12 +178,18 @@ impl Memory {
     /// reported.
     pub fn tick(&mut self, cycles: u64) {
         let timer_irqs = self.timers.tick(cycles);
+        self.apu.tick(cycles);
         let out = self.ppu.tick(cycles, &self.vram, &self.palette, &self.oam);
         let irqs = timer_irqs | out.irqs;
         if irqs != 0 {
             self.io.raise_irq(irqs);
         }
         self.run_dma(out.vblank_start, out.hblank_start);
+    }
+
+    /// Take the accumulated stereo audio samples (interleaved L/R, i16).
+    pub fn drain_samples(&mut self) -> Vec<i16> {
+        self.apu.drain_samples()
     }
 
     /// Run any DMA channels triggered this step. Channels are serviced in
@@ -415,6 +426,12 @@ impl Memory {
                 Width::Half => u32::from(self.ppu.read16(off)),
                 Width::Word => self.ppu.read32(off),
             }
+        } else if (SOUND_REG_START..SOUND_REG_END).contains(&off) {
+            match width {
+                Width::Byte => u32::from(self.apu.read8(off)),
+                Width::Half => u32::from(self.apu.read16(off)),
+                Width::Word => self.apu.read32(off),
+            }
         } else if (DMA_REG_START..DMA_REG_END).contains(&off) {
             match width {
                 Width::Byte => u32::from(self.dma.read8(off)),
@@ -442,6 +459,12 @@ impl Memory {
                 Width::Byte => self.ppu.write8(off, value as u8),
                 Width::Half => self.ppu.write16(off, value as u16),
                 Width::Word => self.ppu.write32(off, value),
+            }
+        } else if (SOUND_REG_START..SOUND_REG_END).contains(&off) {
+            match width {
+                Width::Byte => self.apu.write8(off, value as u8),
+                Width::Half => self.apu.write16(off, value as u16),
+                Width::Word => self.apu.write32(off, value),
             }
         } else if (DMA_REG_START..DMA_REG_END).contains(&off) {
             match width {

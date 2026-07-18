@@ -6,6 +6,7 @@
 //! cartridge save handling arrive in later phases; the [`memory::Bus`] trait
 //! is the seam they will plug into without requiring CPU changes.
 
+pub mod apu;
 pub mod bios;
 pub mod cpu;
 pub mod dma;
