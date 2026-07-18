@@ -97,6 +97,15 @@ export class GbaRunner {
     this.emu.load_state(bytes);
   }
 
+  /** The cartridge battery save (the game's .sav). */
+  batteryData(): Uint8Array {
+    return this.emu.save_data();
+  }
+
+  loadBattery(bytes: Uint8Array) {
+    this.emu.load_save_data(bytes);
+  }
+
   private loop = (time: number) => {
     this.emu.run_frame();
     this.image.data.set(this.emu.frame());

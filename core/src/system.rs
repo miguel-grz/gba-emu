@@ -66,6 +66,16 @@ impl Gba {
         self.mem.set_keys(pressed);
     }
 
+    /// The cartridge battery save memory (persist this as the game's `.sav`).
+    pub fn save_data(&self) -> &[u8] {
+        self.mem.save_data()
+    }
+
+    /// Restore battery save memory from a persisted `.sav`.
+    pub fn load_save_data(&mut self, bytes: &[u8]) {
+        self.mem.load_save_data(bytes);
+    }
+
     /// Serialize a save state (CPU + memory + peripherals, minus the ROM).
     pub fn save_state(&self) -> Result<Vec<u8>, CoreError> {
         let mut out =

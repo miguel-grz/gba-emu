@@ -214,6 +214,16 @@ impl Memory {
         self.io.set_keys(pressed);
     }
 
+    /// The cartridge battery-backed save memory (for persisting a `.sav`).
+    pub fn save_data(&self) -> &[u8] {
+        self.save.data()
+    }
+
+    /// Restore battery save memory from a previously persisted `.sav`.
+    pub fn load_save_data(&mut self, bytes: &[u8]) {
+        self.save.load_data(bytes);
+    }
+
     /// Serialize the full machine state (everything except the cartridge ROM)
     /// into a save-state blob.
     pub fn save_state(&self) -> Result<Vec<u8>, CoreError> {

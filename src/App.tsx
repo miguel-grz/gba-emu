@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { DEFAULT_KEYMAP, ensureWasm, GbaRunner } from "./lib/gba";
+import { load, store } from "./lib/persist";
 import { Landing } from "./components/Landing";
 import { Console } from "./components/Console";
 
@@ -44,9 +45,18 @@ export function App() {
       setRom(null);
       return;
     }
+    // Restore the battery save (in-game save file) for this cartridge.
+    const batteryKey = `pocket:battery:${fileName}`;
+    const savedBattery = load(batteryKey);
+    if (savedBattery) runner.loadBattery(savedBattery);
+
     runner.onFps = setFps;
     runner.start();
     runnerRef.current = runner;
+
+    // Persist the battery save periodically so in-game saves survive reloads.
+    const persistBattery = () => store(batteryKey, runner.batteryData());
+    const batteryTimer = window.setInterval(persistBattery, 5000);
 
     const onKey = (pressed: boolean) => (e: KeyboardEvent) => {
       const button = DEFAULT_KEYMAP[e.code];
@@ -63,10 +73,12 @@ export function App() {
     return () => {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
+      window.clearInterval(batteryTimer);
+      persistBattery();
       runner.stop();
       runnerRef.current = null;
     };
-  }, [rom]);
+  }, [rom, fileName]);
 
   const showFlash = useCallback((msg: string) => {
     setFlash(msg);
@@ -79,10 +91,7 @@ export function App() {
     const runner = runnerRef.current;
     if (!runner) return;
     try {
-      const bytes = runner.saveState();
-      let binary = "";
-      bytes.forEach((b) => (binary += String.fromCharCode(b)));
-      localStorage.setItem(slotKey, btoa(binary));
+      store(slotKey, runner.saveState());
       showFlash("State saved");
     } catch (e) {
       showFlash("Save failed");
@@ -93,15 +102,12 @@ export function App() {
   const loadState = useCallback(() => {
     const runner = runnerRef.current;
     if (!runner) return;
-    const stored = localStorage.getItem(slotKey);
-    if (!stored) {
+    const bytes = load(slotKey);
+    if (!bytes) {
       showFlash("No saved state");
       return;
     }
     try {
-      const binary = atob(stored);
-      const bytes = new Uint8Array(binary.length);
-      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       runner.loadState(bytes);
       showFlash("State loaded");
     } catch (e) {

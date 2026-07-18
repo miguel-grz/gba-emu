@@ -81,4 +81,14 @@ impl Emulator {
             .load_state(data)
             .map_err(|e| JsValue::from_str(&e.to_string()))
     }
+
+    /// The cartridge battery save memory (the game's `.sav`).
+    pub fn save_data(&self) -> Vec<u8> {
+        self.gba.save_data().to_vec()
+    }
+
+    /// Restore battery save memory from a persisted `.sav`.
+    pub fn load_save_data(&mut self, data: &[u8]) {
+        self.gba.load_save_data(data);
+    }
 }
