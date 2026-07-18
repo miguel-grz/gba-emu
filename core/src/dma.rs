@@ -29,7 +29,7 @@ pub(crate) const ADDR_DEC: u16 = 1;
 pub(crate) const ADDR_FIXED: u16 = 2;
 pub(crate) const ADDR_INC_RELOAD: u16 = 3;
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct DmaChannel {
     pub sad: u32,       // source register (raw)
     pub dad: u32,       // destination register (raw)
@@ -41,6 +41,7 @@ pub(crate) struct DmaChannel {
     pub pending: bool,  // an immediate transfer is queued
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Dma {
     pub(crate) ch: [DmaChannel; 4],
 }

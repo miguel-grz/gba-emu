@@ -19,6 +19,7 @@ use crate::ppu::Ppu;
 use crate::timers::Timers;
 use crate::timing::{access_cycles, Region, SeqTracker, Width};
 use crate::CoreError;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// I/O sub-block boundaries within 0x0400_0000. Offsets outside the PPU/sound/
@@ -94,6 +95,7 @@ pub trait Bus {
 }
 
 /// The GBA memory map.
+#[derive(Serialize, Deserialize)]
 pub struct Memory {
     bios: Vec<u8>,
     ewram: Vec<u8>,
@@ -101,6 +103,9 @@ pub struct Memory {
     palette: Vec<u8>,
     vram: Vec<u8>,
     oam: Vec<u8>,
+    /// The cartridge ROM is immutable, so save states exclude it and the
+    /// loader keeps the ROM already present.
+    #[serde(skip)]
     rom: Vec<u8>,
     io: Io,
     ppu: Ppu,
@@ -203,6 +208,22 @@ impl Memory {
     /// Set the pressed buttons (active-high, KEYINPUT bit order).
     pub fn set_keys(&mut self, pressed: u16) {
         self.io.set_keys(pressed);
+    }
+
+    /// Serialize the full machine state (everything except the cartridge ROM)
+    /// into a save-state blob.
+    pub fn save_state(&self) -> Result<Vec<u8>, CoreError> {
+        bincode::serialize(self).map_err(|e| CoreError::SaveState(e.to_string()))
+    }
+
+    /// Restore machine state from a save-state blob, keeping the loaded ROM.
+    pub fn load_state(&mut self, data: &[u8]) -> Result<(), CoreError> {
+        let restored: Memory =
+            bincode::deserialize(data).map_err(|e| CoreError::SaveState(e.to_string()))?;
+        let rom = std::mem::take(&mut self.rom);
+        *self = restored;
+        self.rom = rom;
+        Ok(())
     }
 
     /// Run any DMA channels triggered this step. Channels are serviced in

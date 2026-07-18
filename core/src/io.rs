@@ -12,6 +12,8 @@
 //! display registers (DISPCNT/DISPSTAT/VCOUNT/…) live in [`crate::ppu`], which
 //! [`crate::memory::Memory`] routes to directly; they are not handled here.
 
+use serde::{Deserialize, Serialize};
+
 /// Interrupt source bits, shared by `IE` and `IF`.
 pub mod irq {
     pub const VBLANK: u16 = 1 << 0;
@@ -30,6 +32,7 @@ pub mod irq {
     pub const GAMEPAK: u16 = 1 << 13;
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Io {
     ie: u16,
     iff: u16,
@@ -42,8 +45,9 @@ pub struct Io {
     /// KEYINPUT (0x130): active-low button state; 0x03FF = nothing pressed.
     keyinput: u16,
     /// Generic backing store for not-yet-implemented registers, so
-    /// read-after-write works. Indexed by (offset & 0x3FF) >> 1.
-    scratch: [u16; 0x200],
+    /// read-after-write works. Indexed by (offset & 0x3FF) >> 1. (A `Vec`
+    /// rather than an array so it serializes for save states.)
+    scratch: Vec<u16>,
 }
 
 impl Io {
@@ -56,7 +60,7 @@ impl Io {
             postflg: 0,
             halt_request: false,
             keyinput: 0x03FF,
-            scratch: [0; 0x200],
+            scratch: vec![0; 0x200],
         }
     }
 

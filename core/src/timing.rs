@@ -114,7 +114,7 @@ pub fn access_cycles(region: Region, width: Width, seq: bool, waitcnt: u16) -> u
 }
 
 /// Tracks the previous access so the next one can be classified S or N.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 pub struct SeqTracker {
     /// Address where the previous access ended, and the region it was in.
     prev_end: Option<(u32, u8)>,

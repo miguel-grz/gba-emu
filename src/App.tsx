@@ -9,7 +9,9 @@ export function App() {
   const [rom, setRom] = useState<Uint8Array | null>(null);
   const [fileName, setFileName] = useState("");
   const [fps, setFps] = useState(0);
+  const [flash, setFlash] = useState("");
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const runnerRef = useRef<GbaRunner | null>(null);
 
   useEffect(() => {
     ensureWasm().then(
@@ -44,6 +46,7 @@ export function App() {
     }
     runner.onFps = setFps;
     runner.start();
+    runnerRef.current = runner;
 
     const onKey = (pressed: boolean) => (e: KeyboardEvent) => {
       const button = DEFAULT_KEYMAP[e.code];
@@ -61,8 +64,51 @@ export function App() {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
       runner.stop();
+      runnerRef.current = null;
     };
   }, [rom]);
+
+  const showFlash = useCallback((msg: string) => {
+    setFlash(msg);
+    setTimeout(() => setFlash(""), 1400);
+  }, []);
+
+  const slotKey = `pocket:save:${fileName}`;
+
+  const saveState = useCallback(() => {
+    const runner = runnerRef.current;
+    if (!runner) return;
+    try {
+      const bytes = runner.saveState();
+      let binary = "";
+      bytes.forEach((b) => (binary += String.fromCharCode(b)));
+      localStorage.setItem(slotKey, btoa(binary));
+      showFlash("State saved");
+    } catch (e) {
+      showFlash("Save failed");
+      console.error(e);
+    }
+  }, [slotKey, showFlash]);
+
+  const loadState = useCallback(() => {
+    const runner = runnerRef.current;
+    if (!runner) return;
+    const stored = localStorage.getItem(slotKey);
+    if (!stored) {
+      showFlash("No saved state");
+      return;
+    }
+    try {
+      const binary = atob(stored);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      runner.loadState(bytes);
+      showFlash("State loaded");
+    } catch (e) {
+      showFlash("Load failed");
+      console.error(e);
+    }
+  }, [slotKey, showFlash]);
 
   return (
     <div className="app">
@@ -79,7 +125,10 @@ export function App() {
           canvasRef={canvasRef}
           fileName={fileName}
           fps={fps}
+          flash={flash}
           onEject={eject}
+          onSave={saveState}
+          onLoad={loadState}
         />
       ) : (
         <Landing ready={ready} error={error} onLoad={loadFile} />

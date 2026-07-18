@@ -30,6 +30,7 @@ pub mod arm;
 pub mod thumb;
 
 use crate::memory::Bus;
+use serde::{Deserialize, Serialize};
 
 pub(crate) const FLAG_N: u32 = 1 << 31;
 pub(crate) const FLAG_Z: u32 = 1 << 30;
@@ -51,7 +52,7 @@ pub(crate) const VEC_FIQ: u32 = 0x1C;
 /// System mode is included even though it is often omitted from summaries:
 /// it shares the User register bank but is privileged, and the GBA BIOS
 /// hands control to games in System mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mode {
     User,
     Fiq,
@@ -105,6 +106,7 @@ impl Mode {
 }
 
 /// ARM7TDMI CPU state.
+#[derive(Serialize, Deserialize)]
 pub struct Cpu {
     /// Active register view for the current mode. `regs[15]` is the fetch
     /// address (see the pipeline notes in the module docs).

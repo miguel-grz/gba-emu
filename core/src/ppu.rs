@@ -33,6 +33,7 @@
 //! is where real hardware has finished drawing it.
 
 use crate::io::irq;
+use serde::{Deserialize, Serialize};
 
 pub const SCREEN_W: usize = 240;
 pub const SCREEN_H: usize = 160;
@@ -96,11 +97,13 @@ const TOTAL_LINES: u16 = 228;
 /// Number of 16-bit registers in the PPU's I/O block (0x000..0x060).
 const NUM_REGS: usize = 0x30;
 
+#[derive(Serialize, Deserialize)]
 pub struct Ppu {
     /// Raw 16-bit register file, indexed by `(offset & 0x3F) >> 1`. Typed
     /// accessors below interpret the fields; unimplemented registers (affine,
     /// window, mosaic, blend) are stored here so reads return what was written.
-    regs: [u16; NUM_REGS],
+    /// (A `Vec` rather than an array so it serializes for save states.)
+    regs: Vec<u16>,
     /// Current scanline (0..228). Drives VCOUNT; not stored in `regs`.
     vcount: u16,
     /// Cycle within the current scanline (0..1232).
@@ -119,7 +122,7 @@ pub struct Ppu {
 impl Ppu {
     pub fn new() -> Self {
         Ppu {
-            regs: [0; NUM_REGS],
+            regs: vec![0; NUM_REGS],
             vcount: 0,
             dot: 0,
             framebuffer: vec![0; SCREEN_W * SCREEN_H],

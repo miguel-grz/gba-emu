@@ -32,6 +32,8 @@ pub enum CoreError {
     RomTooLarge { size: usize, max: usize },
     /// BIOS image is not exactly 16 KiB.
     BadBiosSize { size: usize, expected: usize },
+    /// A save state could not be serialized or restored.
+    SaveState(String),
     /// Underlying I/O failure while loading a file.
     Io(std::io::Error),
 }
@@ -48,6 +50,7 @@ impl fmt::Display for CoreError {
             CoreError::BadBiosSize { size, expected } => {
                 write!(f, "BIOS is {size} bytes, expected exactly {expected}")
             }
+            CoreError::SaveState(e) => write!(f, "save state error: {e}"),
             CoreError::Io(e) => write!(f, "I/O error: {e}"),
         }
     }

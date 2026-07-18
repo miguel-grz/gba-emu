@@ -65,4 +65,31 @@ impl Gba {
     pub fn set_keys(&mut self, pressed: u16) {
         self.mem.set_keys(pressed);
     }
+
+    /// Serialize a save state (CPU + memory + peripherals, minus the ROM).
+    pub fn save_state(&self) -> Result<Vec<u8>, CoreError> {
+        let mut out =
+            bincode::serialize(&self.cpu).map_err(|e| CoreError::SaveState(e.to_string()))?;
+        let mem = self.mem.save_state()?;
+        // Length-prefix the CPU blob so load can split the two.
+        let mut blob = (out.len() as u32).to_le_bytes().to_vec();
+        blob.append(&mut out);
+        blob.extend_from_slice(&mem);
+        Ok(blob)
+    }
+
+    /// Restore a save state produced by [`Gba::save_state`], keeping the ROM.
+    pub fn load_state(&mut self, data: &[u8]) -> Result<(), CoreError> {
+        if data.len() < 4 {
+            return Err(CoreError::SaveState("truncated".into()));
+        }
+        let cpu_len = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+        let end = 4 + cpu_len;
+        if data.len() < end {
+            return Err(CoreError::SaveState("truncated".into()));
+        }
+        self.cpu =
+            bincode::deserialize(&data[4..end]).map_err(|e| CoreError::SaveState(e.to_string()))?;
+        self.mem.load_state(&data[end..])
+    }
 }

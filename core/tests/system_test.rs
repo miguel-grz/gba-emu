@@ -163,6 +163,22 @@ fn timer_enable_edge_loads_reload() {
 // ------------------------------------------------------- CPU integration
 
 #[test]
+fn save_state_roundtrip() {
+    let mut gba = Gba::new(vec![0; 8]).unwrap();
+    // Establish some state, snapshot it, then clobber and restore.
+    gba.mem.write32(EWRAM, 0xCAFE_BABE);
+    gba.cpu.set_reg(5, 0x1234_5678);
+    let state = gba.save_state().unwrap();
+
+    gba.mem.write32(EWRAM, 0);
+    gba.cpu.set_reg(5, 0);
+
+    gba.load_state(&state).unwrap();
+    assert_eq!(gba.mem.read32(EWRAM), 0xCAFE_BABE);
+    assert_eq!(gba.cpu.reg(5), 0x1234_5678);
+}
+
+#[test]
 fn gba_stepping_drives_timers() {
     // A spinning ROM; the timer must advance purely from CPU stepping, which
     // ticks the peripheral clock each instruction.

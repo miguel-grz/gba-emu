@@ -25,7 +25,7 @@ const FRAME_SEQ_PERIOD: u32 = 16_777_216 / 512;
 const DUTY: [u8; 4] = [0b0000_0001, 0b1000_0001, 0b1000_0111, 0b0111_1110];
 
 /// A square-wave channel (used by channels 1 and 2; only channel 1 sweeps).
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Square {
     // Registers.
     duty: u8,
@@ -175,7 +175,7 @@ impl Square {
 }
 
 /// Wave channel (channel 3): 32 4-bit samples from wave RAM.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Wave {
     freq: u16,
     length_load: u8,
@@ -238,7 +238,7 @@ impl Wave {
 }
 
 /// Noise channel (channel 4): LFSR-driven pseudo-random output.
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Noise {
     length_load: u8,
     length_enabled: bool,
@@ -332,6 +332,7 @@ impl Noise {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Apu {
     ch1: Square,
     ch2: Square,
@@ -347,7 +348,9 @@ pub struct Apu {
     frame_seq_step: u8,
     frame_seq_timer: u32,
     sample_timer: u32,
-    /// Interleaved stereo samples (L, R), i16.
+    /// Interleaved stereo samples (L, R), i16. Transient output — not part of
+    /// a save state.
+    #[serde(skip)]
     buffer: Vec<i16>,
     /// Direct Sound FIFOs (up to 32 bytes) and their current output samples.
     fifo_a: VecDeque<i8>,

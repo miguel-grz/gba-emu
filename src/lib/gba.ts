@@ -89,6 +89,14 @@ export class GbaRunner {
     this.emu.set_keys(this.keys);
   }
 
+  saveState(): Uint8Array {
+    return this.emu.save_state();
+  }
+
+  loadState(bytes: Uint8Array) {
+    this.emu.load_state(bytes);
+  }
+
   private loop = (time: number) => {
     this.emu.run_frame();
     this.image.data.set(this.emu.frame());

@@ -67,4 +67,18 @@ impl Emulator {
     pub fn set_keys(&mut self, pressed: u16) {
         self.gba.set_keys(pressed);
     }
+
+    /// Serialize a save state (excludes the ROM).
+    pub fn save_state(&self) -> Result<Vec<u8>, JsValue> {
+        self.gba
+            .save_state()
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
+
+    /// Restore a save state produced by [`Emulator::save_state`].
+    pub fn load_state(&mut self, data: &[u8]) -> Result<(), JsValue> {
+        self.gba
+            .load_state(data)
+            .map_err(|e| JsValue::from_str(&e.to_string()))
+    }
 }

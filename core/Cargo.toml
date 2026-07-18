@@ -12,3 +12,5 @@ description = "Game Boy Advance emulator core (no UI dependencies)"
 name = "gba_core"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+bincode = "1"

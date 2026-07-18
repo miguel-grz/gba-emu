@@ -22,7 +22,7 @@ mod cnt {
     pub const ENABLE: u16 = 1 << 7;
 }
 
-#[derive(Default)]
+#[derive(Default, serde::Serialize, serde::Deserialize)]
 struct Timer {
     reload: u16,
     control: u16,
@@ -61,6 +61,7 @@ impl Timer {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Timers {
     timers: [Timer; 4],
 }
