@@ -497,6 +497,106 @@ fn bg_mosaic_blocks_pixels() {
     assert_eq!(render_line0(setup(true))[1], a);
 }
 
+// ---------------------------------------------------- windows & blending
+
+const BLDCNT: u32 = 0x0400_0050;
+const BLDALPHA: u32 = 0x0400_0052;
+const BLDY: u32 = 0x0400_0054;
+const WIN0H: u32 = 0x0400_0040;
+const WIN0V: u32 = 0x0400_0044;
+const WININ: u32 = 0x0400_0048;
+const WINOUT: u32 = 0x0400_004A;
+
+#[test]
+fn alpha_blend_two_backgrounds() {
+    // BG0 (front, red) is 1st target; BG1 (behind, green) is 2nd; 50/50 blend.
+    let line = render_line0(|m| {
+        m.write16(PALETTE + 2, 0x001F); // BG0 index 1 = red
+        m.write16(PALETTE + 4, 0x03E0); // BG1 index 2 = green
+        fill_tile_4bpp(m, 0, 0, 1); // BG0 tile
+        fill_tile_4bpp(m, 0x4000, 0, 2); // BG1 tile
+        m.write16(BG0CNT, 1 << 8); // prio 0
+        m.write16(BG1CNT, (1 << 2) | (2 << 8) | 1); // char base 0x4000, prio 1
+        m.write16(DISPCNT, (1 << 8) | (1 << 9));
+        m.write16(BLDCNT, (1 << 6) | (1 << 0) | (1 << 9)); // alpha, T1=BG0, T2=BG1
+        m.write16(BLDALPHA, 0x0808); // eva = evb = 8/16
+    });
+    assert!(line.iter().all(|&px| px == 0x01EF), "50/50 red+green blend");
+}
+
+#[test]
+fn brightness_increase_toward_white() {
+    let line = render_line0(|m| {
+        m.write16(PALETTE + 2, 0x0000); // BG0 index 1 = black
+        fill_tile_4bpp(m, 0, 0, 1);
+        m.write16(BG0CNT, 1 << 8);
+        m.write16(DISPCNT, 1 << 8);
+        m.write16(BLDCNT, (2 << 6) | (1 << 0)); // brighten, T1 = BG0
+        m.write16(BLDY, 8); // evy = 8/16
+    });
+    assert!(
+        line.iter().all(|&px| px == 0x3DEF),
+        "black brightened halfway"
+    );
+}
+
+#[test]
+fn brightness_decrease_toward_black() {
+    let line = render_line0(|m| {
+        m.write16(PALETTE + 2, 0x7FFF); // BG0 index 1 = white
+        fill_tile_4bpp(m, 0, 0, 1);
+        m.write16(BG0CNT, 1 << 8);
+        m.write16(DISPCNT, 1 << 8);
+        m.write16(BLDCNT, (3 << 6) | (1 << 0)); // darken, T1 = BG0
+        m.write16(BLDY, 8);
+    });
+    assert!(
+        line.iter().all(|&px| px == 0x4210),
+        "white darkened halfway"
+    );
+}
+
+#[test]
+fn window_masks_a_layer() {
+    // WIN0 covers x < 120 and enables BG0 there; outside, BG0 is masked and
+    // the backdrop shows.
+    let bg = 0x001F;
+    let backdrop = 0x7C00;
+    let line = render_line0(|m| {
+        m.write16(PALETTE, backdrop);
+        m.write16(PALETTE + 2, bg);
+        fill_tile_4bpp(m, 0, 0, 1);
+        m.write16(BG0CNT, 1 << 8);
+        m.write16(WIN0H, 120); // left 0, right 120
+        m.write16(WIN0V, 160); // top 0, bottom 160
+        m.write16(WININ, 1 << 0); // window 0 enables BG0
+        m.write16(WINOUT, 0); // outside enables nothing
+        m.write16(DISPCNT, (1 << 8) | (1 << 13)); // BG0 + WIN0
+    });
+    assert_eq!(line[0], bg, "inside the window BG0 shows");
+    assert_eq!(line[200], backdrop, "outside the window BG0 is masked");
+}
+
+#[test]
+fn semi_transparent_sprite_blends_over_bg() {
+    let line = render_line0(|m| {
+        m.write16(PALETTE + 2, 0x03E0); // BG0 index 1 = green (behind)
+        m.write16(OBJ_PAL + 2, 0x001F); // OBJ index 1 = red (semi-transparent)
+        fill_tile_4bpp(m, 0, 0, 1);
+        obj_tile_4bpp(m, 1, 1);
+        m.write16(BG0CNT, 1 << 8);
+        set_sprite(m, 0, 1 << 10, 50, 1); // attr0 mode 1 = semi-transparent
+        m.write16(DISPCNT, (1 << 8) | (1 << 12));
+        m.write16(BLDCNT, 1 << 8); // BG0 is a 2nd target
+        m.write16(BLDALPHA, 0x0808);
+    });
+    assert!(
+        line[50..58].iter().all(|&px| px == 0x01EF),
+        "OBJ blends with BG0"
+    );
+    assert_eq!(line[10], 0x03E0, "away from the sprite, plain BG0");
+}
+
 // ------------------------------------------------------------ color helper
 
 #[test]

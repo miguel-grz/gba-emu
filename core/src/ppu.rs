@@ -15,11 +15,14 @@
 //!   [`Ppu::render_sprites_line`].
 //! * BG and OBJ mosaic.
 //! * The bitmap modes 3–5 (BG2); see [`Ppu::render_bitmap_line`].
+//! * Windows (WIN0/WIN1/OBJ window) and the color special effects — alpha
+//!   blending, brighten, darken, and OBJ semi-transparency; see
+//!   [`Ppu::composite`].
 //!
-//! Deferred to Phase 5 part B (they need a compositing rework to track the top
-//! two layers per pixel): windows and alpha blending / brightness. The OBJ
-//! window mode is skipped for the same reason. The register storage exists so
-//! reads/writes behave; only those effects' rendering is missing.
+//! Compositing renders each layer into its own buffer, then per pixel selects
+//! the front-most and second layers (honoring window masks) and applies the
+//! blend/brightness effect. This is the whole GBA PPU feature set for the tiled
+//! and bitmap modes.
 //!
 //! ### Timing
 //!
@@ -47,6 +50,44 @@ pub struct PpuOutput {
 enum BgKind {
     Text,
     Affine,
+}
+
+/// One rendered background scanline: a color per pixel and whether it is
+/// opaque (index-0 / out-of-map pixels are transparent).
+struct Layer {
+    color: [u16; SCREEN_W],
+    opaque: [bool; SCREEN_W],
+}
+
+impl Layer {
+    fn new() -> Self {
+        Layer {
+            color: [0; SCREEN_W],
+            opaque: [false; SCREEN_W],
+        }
+    }
+}
+
+/// The rendered sprite scanline, with the extra per-pixel state compositing
+/// needs: priority, the semi-transparent (blend) flag, and OBJ-window coverage.
+struct ObjLayer {
+    color: [u16; SCREEN_W],
+    opaque: [bool; SCREEN_W],
+    prio: [u8; SCREEN_W],
+    semi: [bool; SCREEN_W],
+    window: [bool; SCREEN_W],
+}
+
+impl ObjLayer {
+    fn new() -> Self {
+        ObjLayer {
+            color: [0; SCREEN_W],
+            opaque: [false; SCREEN_W],
+            prio: [0; SCREEN_W],
+            semi: [false; SCREEN_W],
+            window: [false; SCREEN_W],
+        }
+    }
 }
 const DOTS_PER_LINE: u32 = 1232;
 const HDRAW_DOTS: u32 = 960;
@@ -334,61 +375,168 @@ impl Ppu {
             return;
         }
 
-        let backdrop = read_u16(palette, 0);
-        let mut line = [backdrop; SCREEN_W];
-        // Per-pixel priority of the current winner. 4 = backdrop (behind all
-        // BG/OBJ priorities 0–3), so any layer claims an unclaimed pixel.
-        let mut prio = [4u8; SCREEN_W];
+        // Each layer is rendered independently into its own buffer, then the
+        // pixels are composited with window masking and the color special
+        // effects (alpha blend / brighten / darken).
+        let mut bg: [Layer; 4] = std::array::from_fn(|_| Layer::new());
+        let mut bg_active = [false; 4];
+        let mut obj = ObjLayer::new();
 
         let mode = self.dispcnt() & 0x7;
         if mode <= 2 {
-            // Composite front-to-back: enabled BGs by (priority, index). Each
-            // BG is a text or affine layer depending on the mode.
-            let mut order: Vec<usize> = (0..4)
-                .filter(|&bg| {
-                    self.dispcnt() & (1 << (8 + bg)) != 0 && Self::bg_kind(mode, bg).is_some()
-                })
-                .collect();
-            order.sort_by_key(|&bg| (self.bgcnt(bg) & 0x3, bg));
-            for bg in order {
-                match Self::bg_kind(mode, bg) {
+            for i in 0..4 {
+                if self.dispcnt() & (1 << (8 + i)) == 0 {
+                    continue;
+                }
+                match Self::bg_kind(mode, i) {
                     Some(BgKind::Text) => {
-                        self.render_text_bg_line(bg, ly, vram, palette, &mut line, &mut prio)
+                        bg_active[i] = true;
+                        self.render_text_bg_line(i, ly, vram, palette, &mut bg[i]);
                     }
                     Some(BgKind::Affine) => {
-                        self.render_affine_bg_line(bg, vram, palette, &mut line, &mut prio)
+                        bg_active[i] = true;
+                        self.render_affine_bg_line(i, vram, palette, &mut bg[i]);
                     }
                     None => {}
                 }
             }
         } else if self.dispcnt() & 1 << 10 != 0 {
-            // Bitmap modes 3–5 render on BG2 only.
-            self.render_bitmap_line(mode, ly, vram, palette, &mut line, &mut prio);
+            bg_active[2] = true;
+            self.render_bitmap_line(mode, ly, vram, palette, &mut bg[2]);
         }
 
-        // Sprites (OBJ) are composited on top: an OBJ pixel wins when its
-        // priority is at least as high as the BG pixel it covers (OBJs sit in
-        // front of same-priority backgrounds).
         if self.dispcnt() & 1 << 12 != 0 {
-            self.render_sprites_line(ly, vram, palette, oam, &mut line, &prio);
+            self.render_sprites_line(ly, vram, palette, oam, &mut obj);
         }
 
-        self.framebuffer[base..base + SCREEN_W].copy_from_slice(&line);
+        self.composite(ly, palette, &bg, &bg_active, &obj, base);
     }
 
-    /// Render one text background into the scanline buffer, filling only pixels
-    /// not already claimed by a higher-priority layer.
+    /// Composite the rendered layers into the framebuffer, applying window
+    /// masks and the color special effects.
+    #[allow(clippy::too_many_arguments)]
+    fn composite(
+        &mut self,
+        ly: u16,
+        palette: &[u8],
+        bg: &[Layer; 4],
+        bg_active: &[bool; 4],
+        obj: &ObjLayer,
+        base: usize,
+    ) {
+        let backdrop = read_u16(palette, 0);
+        let bg_prio = [
+            self.bgcnt(0) & 3,
+            self.bgcnt(1) & 3,
+            self.bgcnt(2) & 3,
+            self.bgcnt(3) & 3,
+        ];
+        let bldcnt = self.regs[0x28];
+        let bldalpha = self.regs[0x29];
+        let bldy = self.regs[0x2A];
+        let sfx_mode = (bldcnt >> 6) & 3;
+        let eva = (bldalpha & 0x1F).min(16) as u32;
+        let evb = ((bldalpha >> 8) & 0x1F).min(16) as u32;
+        let evy = (bldy & 0x1F).min(16) as u32;
+        let windows_on = self.dispcnt() & 0xE000 != 0;
+
+        // Sort key: lower is more in front. OBJ beats a BG of equal priority;
+        // lower BG index beats higher; the backdrop is always last.
+        const BACKDROP_KEY: u16 = u16::MAX;
+
+        for x in 0..SCREEN_W {
+            let mask = if windows_on {
+                self.window_mask(x, ly, obj.window[x])
+            } else {
+                0x3F
+            };
+
+            // Find the front-most (a) and second (b) enabled opaque layers.
+            let mut a = (BACKDROP_KEY, backdrop, 5u8);
+            let mut b = (BACKDROP_KEY, backdrop, 5u8);
+            let mut consider = |key: u16, color: u16, layer: u8| {
+                if key < a.0 {
+                    b = a;
+                    a = (key, color, layer);
+                } else if key < b.0 {
+                    b = (key, color, layer);
+                }
+            };
+            for i in 0..4 {
+                if bg_active[i] && bg[i].opaque[x] && mask & (1 << i) != 0 {
+                    consider(bg_prio[i] * 8 + 1 + i as u16, bg[i].color[x], i as u8);
+                }
+            }
+            if obj.opaque[x] && mask & (1 << 4) != 0 {
+                consider(u16::from(obj.prio[x]) * 8, obj.color[x], 4);
+            }
+
+            let sfx = mask & (1 << 5) != 0;
+            let is_t1 = |l: u8| bldcnt & (1 << l) != 0;
+            let is_t2 = |l: u8| bldcnt & (1 << (8 + l)) != 0;
+            let color = if a.2 == 4 && obj.semi[x] && is_t2(b.2) {
+                // A semi-transparent OBJ alpha-blends with the layer behind it.
+                alpha_blend(a.1, b.1, eva, evb)
+            } else if sfx && sfx_mode == 1 && is_t1(a.2) && is_t2(b.2) {
+                alpha_blend(a.1, b.1, eva, evb)
+            } else if sfx && sfx_mode == 2 && is_t1(a.2) {
+                brighten(a.1, evy)
+            } else if sfx && sfx_mode == 3 && is_t1(a.2) {
+                darken(a.1, evy)
+            } else {
+                a.1
+            };
+            self.framebuffer[base + x] = color;
+        }
+    }
+
+    /// The 6-bit layer-enable mask (BG0–3, OBJ, special-effect) for a pixel,
+    /// chosen by whichever window region contains it.
+    fn window_mask(&self, x: usize, ly: u16, obj_win: bool) -> u16 {
+        let d = self.dispcnt();
+        if d & 1 << 13 != 0 && self.in_window(0, x, ly) {
+            self.regs[0x24] & 0x3F // WININ, window 0
+        } else if d & 1 << 14 != 0 && self.in_window(1, x, ly) {
+            (self.regs[0x24] >> 8) & 0x3F // WININ, window 1
+        } else if d & 1 << 15 != 0 && obj_win {
+            (self.regs[0x25] >> 8) & 0x3F // WINOUT high, OBJ window
+        } else {
+            self.regs[0x25] & 0x3F // WINOUT low, outside all windows
+        }
+    }
+
+    /// Whether (x, ly) is inside window `w` (0 or 1), honoring the X/Y wrap
+    /// case where the "left" edge is greater than the "right".
+    fn in_window(&self, w: usize, x: usize, ly: u16) -> bool {
+        let h = self.regs[0x20 + w];
+        let v = self.regs[0x22 + w];
+        let (left, right) = ((h >> 8) as usize, (h & 0xFF) as usize);
+        let (top, bottom) = ((v >> 8) as usize, (v & 0xFF) as usize);
+        let ly = ly as usize;
+        let inx = if left <= right {
+            x >= left && x < right
+        } else {
+            x >= left || x < right
+        };
+        let iny = if top <= bottom {
+            ly >= top && ly < bottom
+        } else {
+            ly >= top || ly < bottom
+        };
+        inx && iny
+    }
+
+    /// Render one text background into its own layer buffer (every pixel;
+    /// index-0 pixels stay transparent).
     fn render_text_bg_line(
         &self,
         bg: usize,
         ly: u16,
         vram: &[u8],
         palette: &[u8],
-        line: &mut [u16; SCREEN_W],
-        prio: &mut [u8; SCREEN_W],
+        layer: &mut Layer,
     ) {
         let cnt = self.bgcnt(bg);
-        let bg_prio = (cnt & 0x3) as u8;
         let char_base = (((cnt >> 2) & 0x3) as usize) * 0x4000;
         let screen_base = (((cnt >> 8) & 0x1F) as usize) * 0x800;
         let color8 = cnt & 1 << 7 != 0;
@@ -409,11 +557,6 @@ impl Ppu {
         let py = bgy % 8;
 
         for x in 0..SCREEN_W {
-            // A background painted earlier (higher priority, or lower index at
-            // equal priority) already owns this pixel.
-            if prio[x] != 4 {
-                continue;
-            }
             let bgx = (x - x % mosaic_x + self.bghofs(bg) as usize) % w_px;
             let tx = bgx / 8;
 
@@ -448,8 +591,8 @@ impl Ppu {
             } else {
                 pal_bank * 16 + color_index
             };
-            line[x] = read_u16(palette, pal_entry * 2);
-            prio[x] = bg_prio;
+            layer.color[x] = read_u16(palette, pal_entry * 2);
+            layer.opaque[x] = true;
         }
     }
 
@@ -457,17 +600,9 @@ impl Ppu {
     /// its internal reference point and the PA/PC horizontal step. Affine BGs
     /// are always 8bpp with 1-byte map entries; BGxCNT bit 13 selects wrap vs
     /// transparent outside the map.
-    fn render_affine_bg_line(
-        &self,
-        bg: usize,
-        vram: &[u8],
-        palette: &[u8],
-        line: &mut [u16; SCREEN_W],
-        prio: &mut [u8; SCREEN_W],
-    ) {
+    fn render_affine_bg_line(&self, bg: usize, vram: &[u8], palette: &[u8], layer: &mut Layer) {
         let k = bg - 2; // BG2 -> 0, BG3 -> 1
         let cnt = self.bgcnt(bg);
-        let bg_prio = (cnt & 0x3) as u8;
         let char_base = (((cnt >> 2) & 0x3) as usize) * 0x4000;
         let screen_base = (((cnt >> 8) & 0x1F) as usize) * 0x800;
         let wrap = cnt & 1 << 13 != 0;
@@ -497,8 +632,8 @@ impl Ppu {
             if color_index == 0 {
                 continue;
             }
-            line[x] = read_u16(palette, color_index * 2);
-            prio[x] = bg_prio;
+            layer.color[x] = read_u16(palette, color_index * 2);
+            layer.opaque[x] = true;
         }
     }
 
@@ -515,10 +650,8 @@ impl Ppu {
         ly: u16,
         vram: &[u8],
         palette: &[u8],
-        line: &mut [u16; SCREEN_W],
-        prio: &mut [u8; SCREEN_W],
+        layer: &mut Layer,
     ) {
-        let bg_prio = (self.bgcnt(2) & 0x3) as u8;
         let frame = if self.dispcnt() & 1 << 4 != 0 {
             0xA000
         } else {
@@ -528,8 +661,8 @@ impl Ppu {
         match mode {
             3 => {
                 for x in 0..SCREEN_W {
-                    line[x] = read_u16(vram, (ly * SCREEN_W + x) * 2);
-                    prio[x] = bg_prio;
+                    layer.color[x] = read_u16(vram, (ly * SCREEN_W + x) * 2);
+                    layer.opaque[x] = true;
                 }
             }
             4 => {
@@ -538,16 +671,16 @@ impl Ppu {
                     if idx == 0 {
                         continue; // transparent
                     }
-                    line[x] = read_u16(palette, idx * 2);
-                    prio[x] = bg_prio;
+                    layer.color[x] = read_u16(palette, idx * 2);
+                    layer.opaque[x] = true;
                 }
             }
             _ => {
                 // Mode 5: 160×128 canvas.
                 if ly < 128 {
                     for x in 0..160 {
-                        line[x] = read_u16(vram, frame + (ly * 160 + x) * 2);
-                        prio[x] = bg_prio;
+                        layer.color[x] = read_u16(vram, frame + (ly * 160 + x) * 2);
+                        layer.opaque[x] = true;
                     }
                 }
             }
@@ -567,13 +700,10 @@ impl Ppu {
         vram: &[u8],
         palette: &[u8],
         oam: &[u8],
-        line: &mut [u16; SCREEN_W],
-        bg_prio: &[u8; SCREEN_W],
+        obj: &mut ObjLayer,
     ) {
         let mapping_1d = self.dispcnt() & 1 << 6 != 0;
         let (mos_x, mos_y) = self.obj_mosaic();
-        // Tracks OBJ pixels already claimed by a lower-index sprite this line.
-        let mut obj_written = [false; SCREEN_W];
 
         for i in 0..128 {
             let attr0 = read_u16(oam, i * 8);
@@ -585,9 +715,10 @@ impl Ppu {
             if !affine && attr0 & 1 << 9 != 0 {
                 continue;
             }
-            if (attr0 >> 10) & 0x3 == 2 {
-                continue; // OBJ window: Phase 5 part B
-            }
+            // OBJ mode: 1 = semi-transparent (alpha blend), 2 = OBJ window mask.
+            let obj_mode = (attr0 >> 10) & 0x3;
+            let is_window = obj_mode == 2;
+            let semi = obj_mode == 1;
 
             let shape = (attr0 >> 14) & 0x3;
             let size = (attr1 >> 14) & 0x3;
@@ -628,7 +759,9 @@ impl Ppu {
 
             for cx in 0..bw {
                 let sx = (x + cx) & 0x1FF;
-                if sx >= SCREEN_W || obj_written[sx] {
+                // A color pixel is blocked by a lower-index sprite; an OBJ-window
+                // pixel only needs to still be uncovered as a window.
+                if sx >= SCREEN_W || (!is_window && obj.opaque[sx]) {
                     continue;
                 }
                 let (tx, ty) = if affine {
@@ -656,9 +789,13 @@ impl Ppu {
                 if let Some((ci, pal_base)) =
                     Self::sample_obj(vram, tile_base, tx, ty, w, color8, pal_bank, mapping_1d)
                 {
-                    obj_written[sx] = true;
-                    if obj_prio <= bg_prio[sx] {
-                        line[sx] = read_u16(palette, pal_base + ci * 2);
+                    if is_window {
+                        obj.window[sx] = true; // masks compositing, draws nothing
+                    } else {
+                        obj.opaque[sx] = true;
+                        obj.color[sx] = read_u16(palette, pal_base + ci * 2);
+                        obj.prio[sx] = obj_prio;
+                        obj.semi[sx] = semi;
                     }
                 }
             }
@@ -729,6 +866,50 @@ fn read_i16(data: &[u8], addr: usize) -> i32 {
 /// Sign-extend a 28-bit value (affine reference registers) to i32.
 fn sign_extend_28(value: u32) -> i32 {
     ((value << 4) as i32) >> 4
+}
+
+fn channels(color: u16) -> (u32, u32, u32) {
+    (
+        u32::from(color & 0x1F),
+        u32::from((color >> 5) & 0x1F),
+        u32::from((color >> 10) & 0x1F),
+    )
+}
+
+fn pack(r: u32, g: u32, b: u32) -> u16 {
+    (r.min(31) | g.min(31) << 5 | b.min(31) << 10) as u16
+}
+
+/// Alpha-blend `top` over `bottom` with the BLDALPHA coefficients (eva/evb are
+/// 0..16 = 0/16..16/16).
+fn alpha_blend(top: u16, bottom: u16, eva: u32, evb: u32) -> u16 {
+    let (tr, tg, tb) = channels(top);
+    let (br, bg, bb) = channels(bottom);
+    pack(
+        (tr * eva + br * evb) >> 4,
+        (tg * eva + bg * evb) >> 4,
+        (tb * eva + bb * evb) >> 4,
+    )
+}
+
+/// Brightness increase toward white by `evy`/16 (BLDY, effect mode 2).
+fn brighten(color: u16, evy: u32) -> u16 {
+    let (r, g, b) = channels(color);
+    pack(
+        r + (((31 - r) * evy) >> 4),
+        g + (((31 - g) * evy) >> 4),
+        b + (((31 - b) * evy) >> 4),
+    )
+}
+
+/// Brightness decrease toward black by `evy`/16 (BLDY, effect mode 3).
+fn darken(color: u16, evy: u32) -> u16 {
+    let (r, g, b) = channels(color);
+    pack(
+        r - ((r * evy) >> 4),
+        g - ((g * evy) >> 4),
+        b - ((b * evy) >> 4),
+    )
 }
 
 /// Convert a 15-bit BGR555 color to 8-bit-per-channel RGB (for the frontend

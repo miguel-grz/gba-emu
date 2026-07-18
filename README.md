@@ -17,7 +17,7 @@ polished, modern UI.
 | 3 | PPU tiled modes 0–2 (text backgrounds, scroll, priority, display IRQs) | ✅ done |
 | 4 | Sprites (OBJ — regular, 4/8bpp, flip, 1D/2D mapping, priority) | ✅ done |
 | 6 | DMA (4 channels) + timers (4, cascade) + interrupt wiring | ✅ done |
-| 5 | Bitmap modes ✅, affine BGs/sprites ✅, mosaic ✅; blending + windows (pending) | 🚧 partial |
+| 5 | Bitmap modes, affine BGs/sprites, mosaic, windows, alpha blending | ✅ done |
 | 7 | APU | — |
 | 8 | Tauri shell + UI | — |
 
@@ -130,15 +130,17 @@ via `Memory::load_bios`.
 
 ## Accuracy notes (Phase 5 trade-offs)
 
-- **Done**: bitmap modes 3–5; affine backgrounds (BG2/BG3) with per-scanline
-  reference-point updates and wrap/transparent overflow; affine sprites
-  including double-size; BG and OBJ mosaic.
-- **Pending (part B)**: windows (WIN0/1/OBJ) and alpha blending / brightness
-  (BLDCNT/BLDALPHA/BLDY), plus the OBJ window and OBJ semi-transparency. These
-  need the compositing pipeline to track the top *two* layers per pixel and
-  per-pixel window masks, so they get their own focused pass. Their registers
-  already store/read back; only the effect is missing.
-- Affine sprite mosaic is applied in texture space (a close approximation of
+- The PPU now covers the full tiled/bitmap feature set: bitmap modes 3–5;
+  affine BG2/BG3 with per-scanline reference-point updates and wrap/transparent
+  overflow; affine sprites including double-size; BG and OBJ mosaic; windows
+  (WIN0/WIN1/OBJ window); and the color special effects — alpha blending,
+  brighten, darken, and OBJ semi-transparency.
+- **Compositing** renders each layer into its own scanline buffer, then per
+  pixel picks the front-most and second layers (after window masking) and
+  applies the blend. This is clearer than an in-place painter and is what makes
+  two-target blending possible; the cost is five full-width buffers per line,
+  which a later optimization pass can trim if needed.
+- Affine-sprite mosaic is applied in texture space (a close approximation of
   hardware's screen-space mosaic).
 - **Still stubbed**: cartridge SRAM/Flash/EEPROM saves read as 0, and BIOS
   read-protection is not enforced. Neither affects CPU test ROMs.
