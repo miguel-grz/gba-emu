@@ -23,13 +23,19 @@ use gba_core::{Bus, Cpu, Memory, Mode};
 use std::path::PathBuf;
 
 /// 64 KiB of flat RAM mapped at address 0, mirrored across the address space.
+/// `bios_present` lets a test select the LLE `SWI` path (exception to the
+/// vector) instead of the HLE path (software emulation), which is the default.
 struct RamBus {
     mem: Vec<u8>,
+    bios_present: bool,
 }
 
 impl RamBus {
     fn new() -> Self {
-        RamBus { mem: vec![0; 0x1_0000] }
+        RamBus {
+            mem: vec![0; 0x1_0000],
+            bios_present: false,
+        }
     }
 
     fn write_word(&mut self, addr: u32, value: u32) {
@@ -43,6 +49,9 @@ impl Bus for RamBus {
     }
     fn write8(&mut self, addr: u32, value: u8) {
         self.mem[addr as usize & 0xFFFF] = value;
+    }
+    fn has_bios(&self) -> bool {
+        self.bios_present
     }
 }
 
@@ -200,8 +209,7 @@ fn arm_branch_and_link() {
         0xEB000002, // bl 0x10
         0xE3A01007, // mov r1, #7            ; return lands here
         0xEAFFFFFE, // b .
-        0x00000000,
-        0xE3A02005, // 0x10: mov r2, #5
+        0x00000000, 0xE3A02005, // 0x10: mov r2, #5
         0xE1A0F00E, // mov pc, lr
     ]);
     run(&mut cpu, &mut bus, 4);
@@ -277,7 +285,7 @@ fn banked_sp_survives_mode_switches() {
     run(&mut cpu, &mut bus, 6);
     assert_eq!(cpu.mode(), Mode::System);
     assert_eq!(cpu.reg(13), 0x1000); // System sp restored
-    // Switch back to IRQ: its sp must have been preserved in the bank.
+                                     // Switch back to IRQ: its sp must have been preserved in the bank.
     let (mut cpu2, mut bus2) = arm_cpu(&[
         0xE3A0DA01, 0xE3A000D2, 0xE121F000, 0xE3A0DA02, 0xE3A010DF, 0xE121F001,
         0xE121F000, // msr cpsr_c, r0        ; back to IRQ
@@ -294,7 +302,8 @@ fn swi_enters_supervisor_and_returns() {
         0xEF000000, // 0x04: swi #0
         0xE3A01007, // 0x08: mov r1, #7      ; also the SWI vector target!
     ]);
-    // Vector 0x08 contains "mov r1, #7"; follow it with a return.
+    bus.bios_present = true; // exercise the LLE exception path
+                             // Vector 0x08 contains "mov r1, #7"; follow it with a return.
     bus.write_word(0x0C, 0xE1B0F00E); // movs pc, lr  (restores CPSR)
     run(&mut cpu, &mut bus, 2);
     assert_eq!(cpu.mode(), Mode::Supervisor);
@@ -319,7 +328,7 @@ fn irq_taken_when_unmasked() {
     assert_eq!(cpu.mode(), Mode::Irq);
     assert_eq!(cpu.spsr(), 0x5F);
     assert_eq!(cpu.pc(), 0x18); // IRQ vector
-    // Handler convention: SUBS PC, LR, #4 resumes the interrupted flow.
+                                // Handler convention: SUBS PC, LR, #4 resumes the interrupted flow.
     assert_eq!(cpu.reg(14).wrapping_sub(4), pc_before);
     assert_ne!(cpu.cpsr() & 0x80, 0); // I flag set on entry
 }
@@ -441,8 +450,7 @@ fn thumb_bl_pair_links_and_returns() {
         0xF806, // 0x2: bl suffix -> 0x10
         0x2107, // 0x4: movs r1, #7      ; return lands here
         0xE7FE, // 0x6: b .
-        0x0000, 0x0000, 0x0000, 0x0000,
-        0x2205, // 0x10: movs r2, #5
+        0x0000, 0x0000, 0x0000, 0x0000, 0x2205, // 0x10: movs r2, #5
         0x4770, // 0x12: bx lr
     ]);
     run(&mut cpu, &mut bus, 5);
@@ -471,6 +479,7 @@ fn thumb_swi_enters_arm_supervisor() {
         0x2001, // 0x0: movs r0, #1
         0xDF00, // 0x2: swi #0
     ]);
+    bus.bios_present = true; // exercise the LLE exception path
     run(&mut cpu, &mut bus, 2);
     assert_eq!(cpu.mode(), Mode::Supervisor);
     assert!(!cpu.is_thumb()); // exceptions execute in ARM state
@@ -513,14 +522,18 @@ fn synthetic_rom_runs_from_cartridge_space() {
 
 #[test]
 fn rom_too_large_is_rejected() {
-    let err = Memory::new(vec![0; 33 * 1024 * 1024]).map(|_| ()).unwrap_err();
+    let err = Memory::new(vec![0; 33 * 1024 * 1024])
+        .map(|_| ())
+        .unwrap_err();
     assert!(err.to_string().contains("exceeding"));
 }
 
 // -------------------------------------------------------------- Test ROMs
 
 fn rom_path(name: &str) -> Option<PathBuf> {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/roms").join(name);
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/roms")
+        .join(name);
     path.exists().then_some(path)
 }
 
@@ -543,7 +556,9 @@ fn run_rom(path: &std::path::Path, max_steps: u64) -> (Cpu, Memory, u64) {
 }
 
 fn dump(cpu: &Cpu) -> String {
-    let regs: Vec<String> = (0..16).map(|i| format!("r{i}={:08X}", cpu.reg(i))).collect();
+    let regs: Vec<String> = (0..16)
+        .map(|i| format!("r{i}={:08X}", cpu.reg(i)))
+        .collect();
     format!(
         "pc={:08X} mode={:?} thumb={} cpsr={:08X}\n{}",
         cpu.pc(),
@@ -560,7 +575,11 @@ fn jsmolka_rom_passes(name: &str) {
         return;
     };
     let (cpu, _mem, steps) = run_rom(&path, 50_000_000);
-    assert!(steps < 50_000_000, "{name} never reached an end-of-test loop\n{}", dump(&cpu));
+    assert!(
+        steps < 50_000_000,
+        "{name} never reached an end-of-test loop\n{}",
+        dump(&cpu)
+    );
     // jsmolka convention: failed test number in r12, 0 on full pass.
     assert_eq!(
         cpu.reg(12),
@@ -592,5 +611,10 @@ fn rom_armwrestler_smoke() {
     // trapping into the undefined handler and staying there.
     let (cpu, _mem, steps) = run_rom(&path, 5_000_000);
     eprintln!("armwrestler ran {steps} steps\n{}", dump(&cpu));
-    assert_ne!(cpu.mode(), Mode::Undefined, "parked in undefined trap\n{}", dump(&cpu));
+    assert_ne!(
+        cpu.mode(),
+        Mode::Undefined,
+        "parked in undefined trap\n{}",
+        dump(&cpu)
+    );
 }

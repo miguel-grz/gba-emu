@@ -8,8 +8,8 @@
 //! empty-register-list behavior, and user-bank transfers via the S bit.
 
 use super::{
-    add_with_carry, asr, load16_rotated, load16_signed, load32_rotated, lsl, lsr, multiplier_cycles,
-    ror, rrx, Cpu, Mode, FLAG_C, FLAG_T, FLAG_V, VEC_SWI, VEC_UNDEFINED,
+    add_with_carry, asr, load16_rotated, load16_signed, load32_rotated, lsl, lsr,
+    multiplier_cycles, ror, rrx, Cpu, Mode, FLAG_C, FLAG_T, FLAG_V, VEC_UNDEFINED,
 };
 use crate::memory::Bus;
 
@@ -44,7 +44,7 @@ pub(super) fn execute<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
     } else if op & 0x0E00_0000 == 0x0A00_0000 {
         branch(cpu, bus, op);
     } else if op & 0x0F00_0000 == 0x0F00_0000 {
-        software_interrupt(cpu, bus);
+        software_interrupt(cpu, bus, op);
     } else {
         // Coprocessor instructions: the GBA has no coprocessors, so these
         // take the undefined-instruction trap, as on hardware.
@@ -85,7 +85,11 @@ fn data_processing<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
         // Immediate: 8-bit value rotated right by twice the rotate field.
         let rotate = (op >> 8 & 0xF) * 2;
         let value = (op & 0xFF).rotate_right(rotate);
-        let carry = if rotate == 0 { carry_in } else { value >> 31 != 0 };
+        let carry = if rotate == 0 {
+            carry_in
+        } else {
+            value >> 31 != 0
+        };
         (value, carry, cpu.reg(rn))
     } else {
         let rm = (op & 0xF) as usize;
@@ -93,7 +97,13 @@ fn data_processing<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
         // With a register-specified shift the PC prefetches one further step:
         // R15 reads as instruction address + 12 instead of + 8.
         let pc_adjust = if by_register { 4 } else { 0 };
-        let adj = |i: usize, v: u32| if i == 15 { v.wrapping_add(pc_adjust) } else { v };
+        let adj = |i: usize, v: u32| {
+            if i == 15 {
+                v.wrapping_add(pc_adjust)
+            } else {
+                v
+            }
+        };
         let rm_val = adj(rm, cpu.reg(rm));
         let rn_val = adj(rn, cpu.reg(rn));
         let shift_type = op >> 5 & 3;
@@ -213,7 +223,11 @@ fn data_processing<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
 
 fn mrs(cpu: &mut Cpu, op: u32) {
     let rd = (op >> 12 & 0xF) as usize;
-    let value = if op & 1 << 22 != 0 { cpu.spsr() } else { cpu.cpsr() };
+    let value = if op & 1 << 22 != 0 {
+        cpu.spsr()
+    } else {
+        cpu.cpsr()
+    };
     *cpu.reg_mut(rd) = value;
 }
 
@@ -309,7 +323,7 @@ fn swap<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
         bus.write32(addr & !3, cpu.reg(rm));
         *cpu.reg_mut(rd) = old;
     }
-    cpu.add_cycles(3);
+    cpu.add_cycles(1); // 1 internal cycle; the 3 bus accesses are timed by memory
 }
 
 fn single_transfer<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
@@ -339,7 +353,11 @@ fn single_transfer<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
     };
 
     let base = cpu.reg(rn);
-    let offset_addr = if up { base.wrapping_add(offset) } else { base.wrapping_sub(offset) };
+    let offset_addr = if up {
+        base.wrapping_add(offset)
+    } else {
+        base.wrapping_sub(offset)
+    };
     let addr = if pre_index { offset_addr } else { base };
     // Post-indexed transfers always write back (the W bit then selects the
     // ARM7 "user-mode access" variant, irrelevant without an MMU).
@@ -355,7 +373,7 @@ fn single_transfer<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
         if do_writeback && rn != 15 {
             *cpu.reg_mut(rn) = offset_addr;
         }
-        cpu.add_cycles(2);
+        cpu.add_cycles(1); // LDR internal cycle (data access timed by memory)
         if rd == 15 {
             cpu.branch_to(bus, value);
         } else {
@@ -363,7 +381,11 @@ fn single_transfer<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
         }
     } else {
         // STR of PC stores instruction address + 12 (prefetch quirk).
-        let value = if rd == 15 { cpu.reg(15).wrapping_add(4) } else { cpu.reg(rd) };
+        let value = if rd == 15 {
+            cpu.reg(15).wrapping_add(4)
+        } else {
+            cpu.reg(rd)
+        };
         if byte {
             bus.write8(addr, value as u8);
         } else {
@@ -372,7 +394,7 @@ fn single_transfer<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
         if do_writeback && rn != 15 {
             *cpu.reg_mut(rn) = offset_addr;
         }
-        cpu.add_cycles(1);
+        // STR has no internal cycle; its two bus accesses are timed by memory.
     }
 }
 
@@ -397,20 +419,24 @@ fn halfword_transfer<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
         cpu.reg((op & 0xF) as usize)
     };
     let base = cpu.reg(rn);
-    let offset_addr = if up { base.wrapping_add(offset) } else { base.wrapping_sub(offset) };
+    let offset_addr = if up {
+        base.wrapping_add(offset)
+    } else {
+        base.wrapping_sub(offset)
+    };
     let addr = if pre_index { offset_addr } else { base };
     let do_writeback = !pre_index || writeback;
 
     if load {
         let value = match sh {
-            1 => load16_rotated(bus, addr),                // LDRH
-            2 => bus.read8(addr) as i8 as i32 as u32,      // LDRSB
-            _ => load16_signed(bus, addr),                 // LDRSH
+            1 => load16_rotated(bus, addr),           // LDRH
+            2 => bus.read8(addr) as i8 as i32 as u32, // LDRSB
+            _ => load16_signed(bus, addr),            // LDRSH
         };
         if do_writeback && rn != 15 {
             *cpu.reg_mut(rn) = offset_addr;
         }
-        cpu.add_cycles(2);
+        cpu.add_cycles(1); // load internal cycle (data access timed by memory)
         if rd == 15 {
             cpu.branch_to(bus, value);
         } else {
@@ -420,13 +446,17 @@ fn halfword_transfer<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
         if sh == 1 {
             // STRH; SH = 2/3 stores are ARMv5 doubleword ops, unpredictable
             // on ARM7 — ignored.
-            let value = if rd == 15 { cpu.reg(15).wrapping_add(4) } else { cpu.reg(rd) };
+            let value = if rd == 15 {
+                cpu.reg(15).wrapping_add(4)
+            } else {
+                cpu.reg(rd)
+            };
             bus.write16(addr & !1, value as u16);
         }
         if do_writeback && rn != 15 {
             *cpu.reg_mut(rn) = offset_addr;
         }
-        cpu.add_cycles(1);
+        // STRH has no internal cycle.
     }
 }
 
@@ -457,7 +487,11 @@ fn block_transfer<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
         (false, false) => base.wrapping_sub(size).wrapping_add(4), // DA
         (true, false) => base.wrapping_sub(size),                  // DB
     };
-    let new_base = if up { base.wrapping_add(size) } else { base.wrapping_sub(size) };
+    let new_base = if up {
+        base.wrapping_add(size)
+    } else {
+        base.wrapping_sub(size)
+    };
     // S bit: user-bank transfer, except LDM with R15 in the list where it
     // means "also restore CPSR from SPSR".
     let user_bank = s_bit && !(load && list & 1 << 15 != 0);
@@ -486,7 +520,7 @@ fn block_transfer<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
             }
             addr = addr.wrapping_add(4);
         }
-        cpu.add_cycles(u64::from(count) + 1);
+        cpu.add_cycles(1); // LDM internal cycle; the count accesses are timed by memory
     } else {
         let first = list.trailing_zeros() as usize;
         let mut addr = start;
@@ -511,13 +545,14 @@ fn block_transfer<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
         if writeback && rn != 15 {
             *cpu.reg_mut(rn) = new_base;
         }
-        cpu.add_cycles(u64::from(count));
+        // STM has no internal cycle; its accesses are timed by memory.
     }
 }
 
-fn software_interrupt(cpu: &mut Cpu, bus: &mut impl Bus) {
-    let lr = cpu.reg(15).wrapping_sub(4); // address of the next instruction
-    cpu.enter_exception(bus, VEC_SWI, Mode::Supervisor, lr);
+fn software_interrupt(cpu: &mut Cpu, bus: &mut impl Bus, op: u32) {
+    // The BIOS reads the SWI number from bits 23:16 of the ARM encoding.
+    let number = (op >> 16) as u8;
+    cpu.do_swi(bus, number);
 }
 
 fn undefined(cpu: &mut Cpu, bus: &mut impl Bus) {

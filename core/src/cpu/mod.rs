@@ -124,6 +124,8 @@ pub struct Cpu {
     pipeline: [u32; 2],
     /// Set when the executing instruction wrote PC (pipeline was flushed).
     branched: bool,
+    /// CPU is halted (Halt SWI / HALTCNT), waiting for an interrupt.
+    halted: bool,
     cycles: u64,
 }
 
@@ -144,6 +146,7 @@ impl Cpu {
             bank_und: [0; 2],
             pipeline: [0; 2],
             branched: false,
+            halted: false,
             cycles: 0,
         }
     }
@@ -167,9 +170,29 @@ impl Cpu {
         self.branch_to(bus, 0x0800_0000);
     }
 
-    /// Execute one instruction; returns the (approximate) cycles it took.
+    /// Execute one instruction (or service an interrupt, or idle while
+    /// halted); returns the cycles it took. Memory-access cycles come from the
+    /// bus's waitstate model; internal (I-)cycles are added by the instruction
+    /// handlers.
     pub fn step<B: Bus>(&mut self, bus: &mut B) -> u64 {
         let start = self.cycles;
+
+        // An unmasked pending interrupt is serviced before the next fetch, and
+        // wakes the CPU from halt.
+        if bus.irq_pending() && self.cpsr & FLAG_I == 0 {
+            self.halted = false;
+            self.irq(bus);
+            self.cycles += u64::from(bus.take_access_cycles());
+            return self.cycles - start;
+        }
+
+        // Halted: nothing runs until an interrupt arrives. Account one cycle of
+        // idle time so callers scheduling against `cycles()` still advance.
+        if self.halted {
+            self.cycles += 1;
+            return self.cycles - start;
+        }
+
         self.branched = false;
         if self.is_thumb() {
             let op = self.pipeline[0] as u16;
@@ -190,8 +213,47 @@ impl Cpu {
                 self.regs[15] = self.regs[15].wrapping_add(4);
             }
         }
-        self.cycles += 1;
+        // Drain the waitstate cycles from this instruction's fetch, pipeline
+        // refill and data accesses.
+        self.cycles += u64::from(bus.take_access_cycles());
+        // A HALTCNT write during this instruction (LLE path) halts the CPU.
+        if bus.take_halt_request() {
+            self.halted = true;
+        }
         self.cycles - start
+    }
+
+    /// Whether the CPU is currently halted (waiting for an interrupt).
+    pub fn is_halted(&self) -> bool {
+        self.halted
+    }
+
+    /// Request halt (used by the HLE Halt/IntrWait SWIs).
+    pub(crate) fn request_halt(&mut self) {
+        self.halted = true;
+    }
+
+    /// Dispatch a `SWI`: run the real BIOS (LLE) if one is loaded, otherwise
+    /// emulate the routine in software (HLE).
+    pub(crate) fn do_swi<B: Bus>(&mut self, bus: &mut B, number: u8) {
+        if bus.has_bios() {
+            let lr = if self.is_thumb() {
+                self.regs[15].wrapping_sub(2)
+            } else {
+                self.regs[15].wrapping_sub(4)
+            };
+            self.enter_exception(bus, VEC_SWI, Mode::Supervisor, lr);
+        } else {
+            crate::bios::hle_swi(self, bus, number);
+        }
+    }
+
+    /// Reset into System mode / ARM state and branch to `target` (used by the
+    /// HLE SoftReset SWI).
+    pub(crate) fn reset_to<B: Bus>(&mut self, bus: &mut B, target: u32) {
+        self.halted = false;
+        self.set_cpsr(Mode::System.bits());
+        self.branch_to(bus, target);
     }
 
     /// Signal a normal interrupt. Taken unless the I flag masks it.
@@ -201,7 +263,11 @@ impl Cpu {
         }
         // Return address such that the handler's `SUBS PC, LR, #4` resumes
         // the not-yet-executed instruction, in both states.
-        let lr = if self.is_thumb() { self.regs[15] } else { self.regs[15].wrapping_sub(4) };
+        let lr = if self.is_thumb() {
+            self.regs[15]
+        } else {
+            self.regs[15].wrapping_sub(4)
+        };
         self.enter_exception(bus, VEC_IRQ, Mode::Irq, lr);
     }
 
@@ -211,7 +277,11 @@ impl Cpu {
         if self.cpsr & FLAG_F != 0 {
             return;
         }
-        let lr = if self.is_thumb() { self.regs[15] } else { self.regs[15].wrapping_sub(4) };
+        let lr = if self.is_thumb() {
+            self.regs[15]
+        } else {
+            self.regs[15].wrapping_sub(4)
+        };
         self.enter_exception(bus, VEC_FIQ, Mode::Fiq, lr);
     }
 
@@ -364,7 +434,8 @@ impl Cpu {
             self.regs[15] = t.wrapping_add(8);
         }
         self.branched = true;
-        self.cycles += 2; // pipeline refill
+        // The two refill fetches above are real bus accesses, so their
+        // waitstate cost is counted by the memory model, not added here.
     }
 
     /// Enter an exception: bank-switch, save CPSR into the new mode's SPSR,

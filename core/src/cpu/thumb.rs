@@ -10,8 +10,8 @@
 //! undefined.
 
 use super::{
-    add_with_carry, asr, load16_rotated, load16_signed, load32_rotated, lsl, lsr, multiplier_cycles,
-    ror, Cpu, Mode, FLAG_C, FLAG_T, FLAG_V, VEC_SWI, VEC_UNDEFINED,
+    add_with_carry, asr, load16_rotated, load16_signed, load32_rotated, lsl, lsr,
+    multiplier_cycles, ror, Cpu, Mode, FLAG_C, FLAG_T, FLAG_V, VEC_UNDEFINED,
 };
 use crate::memory::Bus;
 
@@ -43,9 +43,9 @@ pub(super) fn execute<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u16) {
             }
         }
         0x6 | 0x7 => load_store_word_byte(cpu, bus, op), // format 9
-        0x8 => load_store_halfword(cpu, bus, op),       // format 10
-        0x9 => load_store_sp_relative(cpu, bus, op),    // format 11
-        0xA => load_address(cpu, op),                   // format 12
+        0x8 => load_store_halfword(cpu, bus, op),        // format 10
+        0x9 => load_store_sp_relative(cpu, bus, op),     // format 11
+        0xA => load_address(cpu, op),                    // format 12
         0xB => {
             if op & 0x0F00 == 0 {
                 adjust_sp(cpu, op); // format 13
@@ -59,7 +59,7 @@ pub(super) fn execute<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u16) {
         0xD => {
             let cond = op >> 8 & 0xF;
             if cond == 0xF {
-                software_interrupt(cpu, bus); // format 17
+                software_interrupt(cpu, bus, op); // format 17
             } else if cond == 0xE {
                 undefined(cpu, bus);
             } else {
@@ -177,19 +177,19 @@ fn alu_op(cpu: &mut Cpu, op: u32) {
     };
 
     match op >> 6 & 0xF {
-        0x0 => logical(cpu, a & b, true),                       // AND
-        0x1 => logical(cpu, a ^ b, true),                       // EOR
-        0x2 => shift(cpu, lsl(a, b & 0xFF, carry_in)),          // LSL
-        0x3 => shift(cpu, lsr(a, b & 0xFF, carry_in)),          // LSR
-        0x4 => shift(cpu, asr(a, b & 0xFF, carry_in)),          // ASR
-        0x5 => arith(cpu, a, b, u32::from(carry_in), true),     // ADC
-        0x6 => arith(cpu, a, !b, u32::from(carry_in), true),    // SBC
-        0x7 => shift(cpu, ror(a, b & 0xFF, carry_in)),          // ROR
-        0x8 => logical(cpu, a & b, false),                      // TST
-        0x9 => arith(cpu, 0, !b, 1, true),                      // NEG
-        0xA => arith(cpu, a, !b, 1, false),                     // CMP
-        0xB => arith(cpu, a, b, 0, false),                      // CMN
-        0xC => logical(cpu, a | b, true),                       // ORR
+        0x0 => logical(cpu, a & b, true),                    // AND
+        0x1 => logical(cpu, a ^ b, true),                    // EOR
+        0x2 => shift(cpu, lsl(a, b & 0xFF, carry_in)),       // LSL
+        0x3 => shift(cpu, lsr(a, b & 0xFF, carry_in)),       // LSR
+        0x4 => shift(cpu, asr(a, b & 0xFF, carry_in)),       // ASR
+        0x5 => arith(cpu, a, b, u32::from(carry_in), true),  // ADC
+        0x6 => arith(cpu, a, !b, u32::from(carry_in), true), // SBC
+        0x7 => shift(cpu, ror(a, b & 0xFF, carry_in)),       // ROR
+        0x8 => logical(cpu, a & b, false),                   // TST
+        0x9 => arith(cpu, 0, !b, 1, true),                   // NEG
+        0xA => arith(cpu, a, !b, 1, false),                  // CMP
+        0xB => arith(cpu, a, b, 0, false),                   // CMN
+        0xC => logical(cpu, a | b, true),                    // ORR
         0xD => {
             let result = a.wrapping_mul(b); // MUL (C unpredictable; unchanged)
             cpu.add_cycles(multiplier_cycles(b));
@@ -241,7 +241,7 @@ fn load_pc_relative<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
     let rd = (op >> 8 & 7) as usize;
     let addr = (cpu.reg(15) & !2).wrapping_add((op & 0xFF) * 4);
     *cpu.reg_mut(rd) = bus.read32(addr);
-    cpu.add_cycles(2);
+    cpu.add_cycles(1);
 }
 
 /// Format 7: LDR/STR/LDRB/STRB Rd, [Rb, Ro].
@@ -251,21 +251,15 @@ fn load_store_register<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
         .wrapping_add(cpu.reg((op >> 6 & 7) as usize));
     let rd = (op & 7) as usize;
     match op >> 10 & 3 {
-        0 => {
-            bus.write32(addr & !3, cpu.reg(rd)); // STR
-            cpu.add_cycles(1);
-        }
-        1 => {
-            bus.write8(addr, cpu.reg(rd) as u8); // STRB
-            cpu.add_cycles(1);
-        }
+        0 => bus.write32(addr & !3, cpu.reg(rd)), // STR
+        1 => bus.write8(addr, cpu.reg(rd) as u8), // STRB
         2 => {
             *cpu.reg_mut(rd) = load32_rotated(bus, addr); // LDR
-            cpu.add_cycles(2);
+            cpu.add_cycles(1);
         }
         _ => {
             *cpu.reg_mut(rd) = u32::from(bus.read8(addr)); // LDRB
-            cpu.add_cycles(2);
+            cpu.add_cycles(1);
         }
     }
 }
@@ -277,21 +271,18 @@ fn load_store_sign_extended<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
         .wrapping_add(cpu.reg((op >> 6 & 7) as usize));
     let rd = (op & 7) as usize;
     match op >> 10 & 3 {
-        0 => {
-            bus.write16(addr & !1, cpu.reg(rd) as u16); // STRH
-            cpu.add_cycles(1);
-        }
+        0 => bus.write16(addr & !1, cpu.reg(rd) as u16), // STRH
         1 => {
             *cpu.reg_mut(rd) = bus.read8(addr) as i8 as i32 as u32; // LDSB
-            cpu.add_cycles(2);
+            cpu.add_cycles(1);
         }
         2 => {
             *cpu.reg_mut(rd) = load16_rotated(bus, addr); // LDRH
-            cpu.add_cycles(2);
+            cpu.add_cycles(1);
         }
         _ => {
             *cpu.reg_mut(rd) = load16_signed(bus, addr); // LDSH
-            cpu.add_cycles(2);
+            cpu.add_cycles(1);
         }
     }
 }
@@ -304,22 +295,18 @@ fn load_store_word_byte<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
     let rb = (op >> 3 & 7) as usize;
     let rd = (op & 7) as usize;
     let addr = cpu.reg(rb).wrapping_add(if byte { imm } else { imm * 4 });
+    // Loads add one internal cycle; stores none. All bus accesses (including
+    // the instruction fetch) are timed by the memory model.
     match (load, byte) {
-        (false, false) => {
-            bus.write32(addr & !3, cpu.reg(rd));
-            cpu.add_cycles(1);
-        }
-        (false, true) => {
-            bus.write8(addr, cpu.reg(rd) as u8);
-            cpu.add_cycles(1);
-        }
+        (false, false) => bus.write32(addr & !3, cpu.reg(rd)),
+        (false, true) => bus.write8(addr, cpu.reg(rd) as u8),
         (true, false) => {
             *cpu.reg_mut(rd) = load32_rotated(bus, addr);
-            cpu.add_cycles(2);
+            cpu.add_cycles(1);
         }
         (true, true) => {
             *cpu.reg_mut(rd) = u32::from(bus.read8(addr));
-            cpu.add_cycles(2);
+            cpu.add_cycles(1);
         }
     }
 }
@@ -327,14 +314,15 @@ fn load_store_word_byte<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
 /// Format 10: LDRH/STRH Rd, [Rb, #imm5*2].
 fn load_store_halfword<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
     let load = op & 1 << 11 != 0;
-    let addr = cpu.reg((op >> 3 & 7) as usize).wrapping_add((op >> 6 & 0x1F) * 2);
+    let addr = cpu
+        .reg((op >> 3 & 7) as usize)
+        .wrapping_add((op >> 6 & 0x1F) * 2);
     let rd = (op & 7) as usize;
     if load {
         *cpu.reg_mut(rd) = load16_rotated(bus, addr);
-        cpu.add_cycles(2);
+        cpu.add_cycles(1);
     } else {
         bus.write16(addr & !1, cpu.reg(rd) as u16);
-        cpu.add_cycles(1);
     }
 }
 
@@ -345,10 +333,9 @@ fn load_store_sp_relative<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
     let addr = cpu.reg(13).wrapping_add((op & 0xFF) * 4);
     if load {
         *cpu.reg_mut(rd) = load32_rotated(bus, addr);
-        cpu.add_cycles(2);
+        cpu.add_cycles(1);
     } else {
         bus.write32(addr & !3, cpu.reg(rd));
-        cpu.add_cycles(1);
     }
 }
 
@@ -409,7 +396,7 @@ fn push_pop<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
             let value = bus.read32(addr & !3);
             cpu.branch_to(bus, value); // ARMv4T: no interworking, bit 0 ignored
         }
-        cpu.add_cycles(u64::from(count) + 1);
+        cpu.add_cycles(1); // POP/LDM internal cycle
     } else {
         let mut addr = cpu.reg(13).wrapping_sub(4 * count);
         *cpu.reg_mut(13) = addr;
@@ -422,7 +409,7 @@ fn push_pop<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
         if lr_pc {
             bus.write32(addr & !3, cpu.reg(14));
         }
-        cpu.add_cycles(u64::from(count));
+        // PUSH/STM has no internal cycle.
     }
 }
 
@@ -458,7 +445,7 @@ fn multiple_load_store<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
                 addr = addr.wrapping_add(4);
             }
         }
-        cpu.add_cycles(u64::from(count) + 1);
+        cpu.add_cycles(1); // LDM internal cycle
     } else {
         let first = list.trailing_zeros() as usize;
         let mut addr = base;
@@ -466,13 +453,17 @@ fn multiple_load_store<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32) {
             if list & 1 << i != 0 {
                 // Base in list: first position stores the old base, later
                 // positions the written-back value (matches ARM STM).
-                let value = if i == rb && i != first { new_base } else { cpu.reg(i) };
+                let value = if i == rb && i != first {
+                    new_base
+                } else {
+                    cpu.reg(i)
+                };
                 bus.write32(addr & !3, value);
                 addr = addr.wrapping_add(4);
             }
         }
         *cpu.reg_mut(rb) = new_base;
-        cpu.add_cycles(u64::from(count));
+        // STM has no internal cycle.
     }
 }
 
@@ -485,10 +476,9 @@ fn conditional_branch<B: Bus>(cpu: &mut Cpu, bus: &mut B, op: u32, cond: u32) {
     }
 }
 
-/// Format 17: SWI.
-fn software_interrupt(cpu: &mut Cpu, bus: &mut impl Bus) {
-    let lr = cpu.reg(15).wrapping_sub(2); // next instruction
-    cpu.enter_exception(bus, VEC_SWI, Mode::Supervisor, lr);
+/// Format 17: SWI. The Thumb encoding carries the number in bits 7:0.
+fn software_interrupt(cpu: &mut Cpu, bus: &mut impl Bus, op: u32) {
+    cpu.do_swi(bus, (op & 0xFF) as u8);
 }
 
 /// Format 18: unconditional branch (11-bit offset).

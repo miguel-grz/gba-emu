@@ -6,8 +6,11 @@
 //! cartridge save handling arrive in later phases; the [`memory::Bus`] trait
 //! is the seam they will plug into without requiring CPU changes.
 
+pub mod bios;
 pub mod cpu;
+pub mod io;
 pub mod memory;
+pub mod timing;
 
 pub use cpu::{Cpu, Mode};
 pub use memory::{Bus, Memory};
@@ -30,7 +33,10 @@ impl fmt::Display for CoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CoreError::RomTooLarge { size, max } => {
-                write!(f, "ROM is {size} bytes, exceeding the {max}-byte cartridge limit")
+                write!(
+                    f,
+                    "ROM is {size} bytes, exceeding the {max}-byte cartridge limit"
+                )
             }
             CoreError::BadBiosSize { size, expected } => {
                 write!(f, "BIOS is {size} bytes, expected exactly {expected}")
