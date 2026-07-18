@@ -177,7 +177,13 @@ impl Memory {
     /// interrupts. Call this after each `Cpu::step` with the cycles it
     /// reported.
     pub fn tick(&mut self, cycles: u64) {
-        let timer_irqs = self.timers.tick(cycles);
+        let (timer_irqs, sound_overflow) = self.timers.tick(cycles);
+        // A timer overflow clocks the Direct Sound FIFOs.
+        for timer in 0..2 {
+            if sound_overflow & (1 << timer) != 0 {
+                self.apu.on_timer_overflow(timer);
+            }
+        }
         self.apu.tick(cycles);
         let out = self.ppu.tick(cycles, &self.vram, &self.palette, &self.oam);
         let irqs = timer_irqs | out.irqs;
@@ -201,15 +207,34 @@ impl Memory {
                 continue;
             }
             let timing = (ctrl >> cnt::TIMING) & 0x3;
-            let triggered = match timing {
-                0 => std::mem::take(&mut self.dma.ch[i].pending),
-                1 => vblank,
-                2 => hblank,
-                _ => false, // special (sound FIFO / video) — Phase 7
-            };
-            if triggered {
-                self.transfer_dma(i);
+            match timing {
+                0 if std::mem::take(&mut self.dma.ch[i].pending) => self.transfer_dma(i),
+                1 if vblank => self.transfer_dma(i),
+                2 if hblank => self.transfer_dma(i),
+                // Special: DMA1/DMA2 refill a Direct Sound FIFO when it drops
+                // to half. Always four 32-bit words to a fixed destination.
+                3 if (i == 1 || i == 2) && self.apu.fifo_needs_dma(i - 1) => {
+                    self.transfer_fifo_dma(i);
+                }
+                _ => {}
             }
+        }
+    }
+
+    /// A Direct Sound FIFO refill: four words from the (incrementing) source to
+    /// the fixed FIFO register, repeating (the channel stays enabled).
+    fn transfer_fifo_dma(&mut self, i: usize) {
+        let ctrl = self.dma.ch[i].control;
+        let mut src = self.dma.ch[i].src;
+        let dst = self.dma.ch[i].dst; // fixed FIFO address
+        for _ in 0..4 {
+            let value = self.decode_read(src & !3, Width::Word);
+            self.decode_write(dst & !3, Width::Word, value);
+            src = src.wrapping_add(4);
+        }
+        self.dma.ch[i].src = src;
+        if ctrl & cnt::IRQ != 0 {
+            self.io.raise_irq(irq::DMA0 << i);
         }
     }
 

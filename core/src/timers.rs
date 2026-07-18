@@ -72,11 +72,13 @@ impl Timers {
         }
     }
 
-    /// Advance all timers by `cycles`; returns the interrupt bits to raise.
-    /// Processed low-to-high so a cascade timer sees this tick's overflows
-    /// from the timer below it.
-    pub fn tick(&mut self, cycles: u64) -> u16 {
+    /// Advance all timers by `cycles`. Returns the interrupt bits to raise and
+    /// a mask of which of timers 0/1 overflowed (bit 0 / bit 1), used to clock
+    /// Direct Sound. Processed low-to-high so a cascade timer sees this tick's
+    /// overflows from the timer below it.
+    pub fn tick(&mut self, cycles: u64) -> (u16, u8) {
         let mut irqs = 0;
+        let mut sound_overflow = 0u8;
         let mut prev_overflows = 0u32;
         for i in 0..4 {
             let t = &mut self.timers[i];
@@ -97,9 +99,12 @@ impl Timers {
             if overflows > 0 && t.irq_enabled() {
                 irqs |= irq::TIMER0 << i;
             }
+            if overflows > 0 && i < 2 {
+                sound_overflow |= 1 << i;
+            }
             prev_overflows = overflows;
         }
-        irqs
+        (irqs, sound_overflow)
     }
 
     // ---- register access (0x100..0x110) ----

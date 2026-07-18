@@ -1,4 +1,4 @@
-//! Audio Processing Unit — Phase 7 part A: the four PSG (Game Boy) channels.
+//! Audio Processing Unit — the four PSG (Game Boy) channels plus Direct Sound.
 //!
 //! * Channel 1 — square wave with frequency sweep and a volume envelope.
 //! * Channel 2 — square wave with a volume envelope.
@@ -10,8 +10,11 @@
 //! per `SOUNDCNT_L`/`SOUNDCNT_H` and resampled to [`SAMPLE_RATE`] into an
 //! output buffer the frontend will later drain into `cpal`.
 //!
-//! Direct Sound (the two DMA-fed PCM FIFOs) is Phase 7 part B; its registers
-//! store/read back here but produce no audio yet.
+//! Direct Sound: two 8-bit PCM FIFOs (A and B), each clocked by a timer
+//! overflow and refilled by DMA when half-empty. This is what most commercial
+//! games use for music.
+
+use std::collections::VecDeque;
 
 /// Output sample rate (stereo). 16.78 MHz / 512 = 32768 Hz.
 pub const SAMPLE_RATE: u32 = 32768;
@@ -346,6 +349,11 @@ pub struct Apu {
     sample_timer: u32,
     /// Interleaved stereo samples (L, R), i16.
     buffer: Vec<i16>,
+    /// Direct Sound FIFOs (up to 32 bytes) and their current output samples.
+    fifo_a: VecDeque<i8>,
+    fifo_b: VecDeque<i8>,
+    dsa_out: i8,
+    dsb_out: i8,
 }
 
 impl Apu {
@@ -363,7 +371,33 @@ impl Apu {
             frame_seq_timer: FRAME_SEQ_PERIOD,
             sample_timer: CYCLES_PER_SAMPLE,
             buffer: Vec::new(),
+            fifo_a: VecDeque::with_capacity(32),
+            fifo_b: VecDeque::with_capacity(32),
+            dsa_out: 0,
+            dsb_out: 0,
         }
+    }
+
+    /// A timer (0 or 1) overflowed: clock any Direct Sound channel bound to it,
+    /// popping the next PCM sample from its FIFO.
+    pub fn on_timer_overflow(&mut self, timer: u8) {
+        if u16::from(timer) == (self.cnt_h >> 10) & 1 {
+            self.dsa_out = self.fifo_a.pop_front().unwrap_or(0);
+        }
+        if u16::from(timer) == (self.cnt_h >> 14) & 1 {
+            self.dsb_out = self.fifo_b.pop_front().unwrap_or(0);
+        }
+    }
+
+    /// Whether Direct Sound FIFO `ch` (0 = A, 1 = B) is at most half full and
+    /// should be refilled by DMA.
+    pub fn fifo_needs_dma(&self, ch: usize) -> bool {
+        let len = if ch == 0 {
+            self.fifo_a.len()
+        } else {
+            self.fifo_b.len()
+        };
+        len <= 16
     }
 
     /// Take the accumulated stereo samples, clearing the buffer.
@@ -461,12 +495,29 @@ impl Apu {
         // Per-side master volume (SOUNDCNT_L bits 4-6 left, 0-2 right).
         let left_vol = ((self.cnt_l >> 4) & 0x7) as i32 + 1;
         let right_vol = (self.cnt_l & 0x7) as i32 + 1;
-        // Scale 0..(4 channels * 15) to a comfortable i16 range.
-        let scale = |acc: i32, master: i32| -> i16 {
-            (acc * psg_vol * master * 8).clamp(-32768, 32767) as i16
-        };
-        self.buffer.push(scale(left, left_vol));
-        self.buffer.push(scale(right, right_vol));
+        let mut left = left * psg_vol * left_vol * 8;
+        let mut right = right * psg_vol * right_vol * 8;
+
+        // Direct Sound A/B are mixed in independently of SOUNDCNT_L, at 50% or
+        // 100% volume (SOUNDCNT_H bits 2/3), enabled per side by bits 8/9 (A)
+        // and 12/13 (B).
+        let dsa = i32::from(self.dsa_out) * if self.cnt_h & 1 << 2 != 0 { 4 } else { 2 } * 8;
+        let dsb = i32::from(self.dsb_out) * if self.cnt_h & 1 << 3 != 0 { 4 } else { 2 } * 8;
+        if self.cnt_h & 1 << 9 != 0 {
+            left += dsa;
+        }
+        if self.cnt_h & 1 << 8 != 0 {
+            right += dsa;
+        }
+        if self.cnt_h & 1 << 13 != 0 {
+            left += dsb;
+        }
+        if self.cnt_h & 1 << 12 != 0 {
+            right += dsb;
+        }
+
+        self.buffer.push(left.clamp(-32768, 32767) as i16);
+        self.buffer.push(right.clamp(-32768, 32767) as i16);
     }
 
     // ---- register access (0x060..0x0A8, plus wave RAM 0x090..0x0A0) ----
@@ -578,7 +629,20 @@ impl Apu {
                 }
             }
             0x80 => self.cnt_l = value,
-            0x82 => self.cnt_h = value,
+            0x82 => {
+                self.cnt_h = value;
+                if value & 1 << 11 != 0 {
+                    self.fifo_a.clear();
+                    self.dsa_out = 0;
+                }
+                if value & 1 << 15 != 0 {
+                    self.fifo_b.clear();
+                    self.dsb_out = 0;
+                }
+            }
+            // FIFO_A (0xA0) / FIFO_B (0xA4): 8-bit PCM samples, 32 bytes deep.
+            0xA0 | 0xA2 => push_fifo(&mut self.fifo_a, value),
+            0xA4 | 0xA6 => push_fifo(&mut self.fifo_b, value),
             0x84 => {
                 self.master_enable = value & 0x80 != 0;
                 if !self.master_enable {
@@ -648,4 +712,14 @@ fn write_square_cnt_x(ch: &mut Square, value: u16) {
 
 fn noise_cnt_l(ch: &Noise) -> u16 {
     u16::from(ch.env_period) | u16::from(ch.env_add) << 3 | u16::from(ch.env_initial) << 4
+}
+
+/// Push a halfword's two bytes onto a Direct Sound FIFO (as signed samples),
+/// dropping them if the 32-byte FIFO is already full.
+fn push_fifo(fifo: &mut VecDeque<i8>, value: u16) {
+    for byte in [value as u8, (value >> 8) as u8] {
+        if fifo.len() < 32 {
+            fifo.push_back(byte as i8);
+        }
+    }
 }

@@ -18,7 +18,7 @@ polished, modern UI.
 | 4 | Sprites (OBJ — regular, 4/8bpp, flip, 1D/2D mapping, priority) | ✅ done |
 | 6 | DMA (4 channels) + timers (4, cascade) + interrupt wiring | ✅ done |
 | 5 | Bitmap modes, affine BGs/sprites, mosaic, windows, alpha blending | ✅ done |
-| 7 | APU — 4 PSG channels ✅; Direct Sound (DMA PCM) pending | 🚧 partial |
+| 7 | APU — 4 PSG channels + Direct Sound (DMA-fed PCM FIFOs) | ✅ done |
 | 8 | Tauri shell + UI | — |
 
 ## Layout
@@ -35,7 +35,7 @@ core/
 │   ├── ppu.rs          # PPU: text backgrounds + sprites + display timing/IRQs
 │   ├── dma.rs          # 4-channel DMA controller
 │   ├── timers.rs       # 4 hardware timers (prescaler + cascade)
-│   ├── apu.rs          # audio: 4 PSG channels, mixing, sample buffer
+│   ├── apu.rs          # audio: 4 PSG channels + Direct Sound, mixing, samples
 │   ├── timing.rs       # waitstate / S-N cycle model
 │   ├── bios.rs         # BIOS SWI handling (HLE routines + LLE fallback)
 │   ├── system.rs       # Gba: CPU + memory + PPU + DMA + timers, run_frame loop
@@ -147,17 +147,19 @@ via `Memory::load_bios`.
 
 ## Accuracy notes (Phase 7 trade-offs)
 
-- **Done (part A)**: the four PSG channels — two square (channel 1 with
-  frequency sweep), the wave channel, and the noise LFSR — each with volume
-  envelope and length counter, clocked by a 512 Hz frame sequencer, mixed to
-  stereo per SOUNDCNT_L/H and resampled to 32768 Hz into a sample buffer the
-  frontend will drain into `cpal`.
-- **Pending (part B)**: Direct Sound — the two DMA-fed 8-bit PCM FIFOs clocked
-  by a timer overflow. This is what most commercial games actually use for
-  music, and it wires into the "special" DMA start-timing left from Phase 6.
+- The four PSG channels — two square (channel 1 with frequency sweep), the wave
+  channel, and the noise LFSR — each with volume envelope and length counter,
+  clocked by a 512 Hz frame sequencer.
+- **Direct Sound** A/B: two 8-bit PCM FIFOs (32 bytes) each clocked by a timer
+  overflow (SOUNDCNT_H selects the timer), popping one sample per overflow and
+  refilled by DMA1/DMA2 on the "special" start-timing when half-empty — the
+  path left open in Phase 6. This is what most commercial games use for music.
+- Everything mixes to stereo (SOUNDCNT_L/H, master enable) and resamples to
+  32768 Hz into a buffer drained via `Gba::drain_samples`, ready for the
+  Phase 8 frontend to feed `cpal`.
 - Mixing levels are a reasonable approximation, not calibrated against
-  hardware's exact DAC/SOUNDBIAS response; there is no audio output to
-  calibrate against until the Phase 8 frontend.
+  hardware's exact DAC/SOUNDBIAS response — there is no audio output to
+  calibrate against until the frontend exists.
 - **Still stubbed**: cartridge SRAM/Flash/EEPROM saves read as 0, and BIOS
   read-protection is not enforced. Neither affects CPU test ROMs.
 

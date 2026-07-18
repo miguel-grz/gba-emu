@@ -106,6 +106,64 @@ fn envelope_decreases_volume_over_time() {
     );
 }
 
+const FIFO_A: u32 = 0x0400_00A0;
+const TM0: u32 = 0x0400_0100;
+const DMA1_SAD: u32 = 0x0400_00BC;
+const DMA1_DAD: u32 = 0x0400_00C0;
+const DMA1_CNT: u32 = 0x0400_00C4;
+const EWRAM: u32 = 0x0200_0000;
+
+#[test]
+fn direct_sound_fifo_clocked_by_timer() {
+    let mut m = apu();
+    // Enable Direct Sound A on both sides at 100%, clocked by timer 0.
+    m.write16(SOUNDCNT_H, 0x0304);
+    // Fill the 32-byte FIFO with samples of value 100.
+    for _ in 0..8 {
+        m.write32(FIFO_A, 0x6464_6464);
+    }
+    // Timer 0 overflows every 256 cycles.
+    m.write16(TM0, 0xFF00);
+    m.write16(TM0 + 2, 0x80);
+    for _ in 0..30 {
+        m.tick(256);
+    }
+    let samples = m.drain_samples();
+    assert!(
+        samples.iter().any(|&s| s > 1000),
+        "the popped PCM sample reaches the mix"
+    );
+}
+
+#[test]
+fn direct_sound_fifo_refilled_by_dma() {
+    let mut m = apu();
+    m.write16(SOUNDCNT_H, 0x0304); // DSA on, timer 0
+                                   // Sample data in EWRAM.
+    for i in 0..64 {
+        m.write32(EWRAM + i * 4, 0x6464_6464);
+    }
+    // DMA1: EWRAM -> FIFO_A, 32-bit, dest fixed, repeat, special (FIFO) timing.
+    m.write32(DMA1_SAD, EWRAM);
+    m.write32(DMA1_DAD, FIFO_A);
+    let ctrl: u32 = (1 << 15) | (1 << 10) | (2 << 5) | (1 << 9) | (3 << 12);
+    m.write32(DMA1_CNT, 4 | (ctrl << 16));
+    // Timer 0 overflows every 256 cycles.
+    m.write16(TM0, 0xFF00);
+    m.write16(TM0 + 2, 0x80);
+
+    // Pop far more samples than the FIFO holds; DMA must keep refilling it.
+    for _ in 0..200 {
+        m.tick(256);
+    }
+    let samples = m.drain_samples();
+    let tail = &samples[samples.len() - 20..];
+    assert!(
+        tail.iter().any(|&s| s > 1000),
+        "DMA keeps the FIFO fed, so sound continues past 32 samples"
+    );
+}
+
 #[test]
 fn wave_channel_outputs_wave_ram() {
     let mut m = apu();
