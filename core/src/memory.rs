@@ -125,8 +125,10 @@ impl Memory {
                 max: ROM_MAX_SIZE,
             });
         }
+        let mut bios = vec![0; BIOS_SIZE];
+        install_hle_irq_handler(&mut bios);
         Ok(Self {
-            bios: vec![0; BIOS_SIZE],
+            bios,
             ewram: vec![0; EWRAM_SIZE],
             iwram: vec![0; IWRAM_SIZE],
             palette: vec![0; PALETTE_SIZE],
@@ -530,6 +532,35 @@ impl Memory {
         self.access_cycles += access_cycles(Region::of(addr), width, seq, self.io.waitcnt());
         self.open_bus = value;
         self.decode_write(addr, width, value);
+    }
+}
+
+/// Minimal BIOS interrupt dispatcher, written into the BIOS region for HLE
+/// mode (a real BIOS image overwrites it). On an IRQ the hardware vectors to
+/// 0x18; this routine acknowledges IF, records the acknowledged bits in the
+/// BIOS's IntrWait flag word (0x0300_7FF8, reached via the 0x0400_0000-8
+/// IWRAM mirror), and calls the game's handler pointer at 0x0300_7FFC — the
+/// mechanism every commercial game's VBlank loop depends on.
+const HLE_IRQ_HANDLER: [u32; 13] = [
+    0xE92D_500F, // stmfd sp!, {r0-r3, r12, lr}
+    0xE3A0_0301, // mov   r0, #0x0400_0000
+    0xE280_1C02, // add   r1, r0, #0x200          ; r1 = 0x0400_0200 (IE/IF)
+    0xE591_2000, // ldr   r2, [r1]                ; r2 = IE | IF<<16
+    0xE002_2822, // and   r2, r2, r2, lsr #16     ; r2 = IE & IF
+    0xE1C1_20B2, // strh  r2, [r1, #2]            ; acknowledge IF
+    0xE150_30B8, // ldrh  r3, [r0, #-8]           ; BIOS IntrWait flags
+    0xE183_3002, // orr   r3, r3, r2
+    0xE140_30B8, // strh  r3, [r0, #-8]
+    0xE28F_E000, // add   lr, pc, #0              ; return address for the handler
+    0xE510_F004, // ldr   pc, [r0, #-4]           ; call [0x0300_7FFC]
+    0xE8BD_500F, // ldmfd sp!, {r0-r3, r12, lr}
+    0xE25E_F004, // subs  pc, lr, #4              ; return from IRQ
+];
+
+fn install_hle_irq_handler(bios: &mut [u8]) {
+    for (i, word) in HLE_IRQ_HANDLER.iter().enumerate() {
+        let off = 0x18 + i * 4;
+        bios[off..off + 4].copy_from_slice(&word.to_le_bytes());
     }
 }
 

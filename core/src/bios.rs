@@ -23,15 +23,12 @@
 //!   BIOS's fixed-point polynomial. They agree with hardware to within the
 //!   BIOS approximation's own error (a few low bits); code that needs
 //!   bit-identical BIOS trig should run in LLE mode.
-//! * `IntrWait`/`VBlankIntrWait` currently just halt the CPU until an
-//!   interrupt is pending. The BIOS's per-source flag bookkeeping (the
-//!   accumulator at `0x0300_7FF8`) is completed once interrupt *sources*
-//!   exist (Phase 3 PPU / Phase 6 timers+DMA); with none present today there
-//!   is nothing yet to wait on.
-//! * Decompression (LZ77/Huffman/RLE/diff), `BitUnpack`, and the affine-set
-//!   helpers are not implemented yet and return without touching state; a
-//!   game that calls them under HLE will misbehave and should use LLE until
-//!   these land.
+//! * `IntrWait`/`VBlankIntrWait` halt the CPU until an interrupt arrives; the
+//!   injected BIOS interrupt dispatcher (see [`crate::memory`]) then runs the
+//!   game's own handler. This wakes on any enabled interrupt rather than the
+//!   specific awaited one — accurate for the common VBlank-only case.
+//! * Decompression (LZ77, run-length, Huffman, diff-unfilter) and `BitUnpack`
+//!   are implemented. The affine-set helpers (0x0E/0x0F) are not.
 
 use crate::cpu::Cpu;
 use crate::memory::Bus;
@@ -58,9 +55,227 @@ pub fn hle_swi<B: Bus>(cpu: &mut Cpu, bus: &mut B, number: u8) {
             // GetBiosChecksum: the constant returned by the retail GBA BIOS.
             cpu.set_reg(0, 0xBAAE_187F);
         }
-        // Unimplemented services (affine-set, decompression, BitUnpack, …).
-        // Returning leaves state untouched rather than corrupting it.
+        0x10 => bit_unpack(cpu, bus),
+        0x11 => lz77(cpu, bus, false), // LZ77UnCompWRAM (byte writes)
+        0x12 => lz77(cpu, bus, true),  // LZ77UnCompVRAM (halfword writes)
+        0x13 => huffman(cpu, bus),
+        0x14 => rl_uncomp(cpu, bus, false),        // RLUnCompWRAM
+        0x15 => rl_uncomp(cpu, bus, true),         // RLUnCompVRAM
+        0x16 => diff_unfilter(cpu, bus, 8, false), // Diff8bitUnFilterWRAM
+        0x17 => diff_unfilter(cpu, bus, 8, true),  // Diff8bitUnFilterVRAM
+        0x18 => diff_unfilter(cpu, bus, 16, true), // Diff16bitUnFilter (VRAM)
+        // Affine-set (0x0E/0x0F), sound and other services are not implemented;
+        // returning leaves state untouched rather than corrupting it.
         _ => {}
+    }
+}
+
+/// Write a decompressed byte buffer to `dst`, as bytes (WRAM) or halfwords
+/// (VRAM, which cannot take 8-bit writes).
+fn write_out<B: Bus>(bus: &mut B, dst: u32, data: &[u8], vram: bool) {
+    if vram {
+        let mut i = 0;
+        while i + 1 < data.len() {
+            let hw = u16::from(data[i]) | u16::from(data[i + 1]) << 8;
+            bus.write16(dst + i as u32, hw);
+            i += 2;
+        }
+    } else {
+        for (i, &b) in data.iter().enumerate() {
+            bus.write8(dst + i as u32, b);
+        }
+    }
+}
+
+/// LZ77 decompression (SWI 0x11 WRAM / 0x12 VRAM). r0 = source, r1 = dest.
+fn lz77<B: Bus>(cpu: &mut Cpu, bus: &mut B, vram: bool) {
+    let src = cpu.reg(0);
+    let dst = cpu.reg(1);
+    let size = (bus.read32(src) >> 8) as usize;
+    let mut out: Vec<u8> = Vec::with_capacity(size);
+    let mut p = src + 4;
+    while out.len() < size {
+        let flags = bus.read8(p);
+        p += 1;
+        for bit in 0..8 {
+            if out.len() >= size {
+                break;
+            }
+            if flags & (0x80 >> bit) != 0 {
+                let b1 = bus.read8(p);
+                let b2 = bus.read8(p + 1);
+                p += 2;
+                let len = (b1 >> 4) as usize + 3;
+                let back = ((u16::from(b1 & 0xF) << 8) | u16::from(b2)) as usize + 1;
+                for _ in 0..len {
+                    if out.len() >= size || back > out.len() {
+                        break;
+                    }
+                    out.push(out[out.len() - back]);
+                }
+            } else {
+                out.push(bus.read8(p));
+                p += 1;
+            }
+        }
+    }
+    write_out(bus, dst, &out, vram);
+}
+
+/// Run-length decompression (SWI 0x14 WRAM / 0x15 VRAM). r0 = src, r1 = dest.
+fn rl_uncomp<B: Bus>(cpu: &mut Cpu, bus: &mut B, vram: bool) {
+    let src = cpu.reg(0);
+    let dst = cpu.reg(1);
+    let size = (bus.read32(src) >> 8) as usize;
+    let mut out: Vec<u8> = Vec::with_capacity(size);
+    let mut p = src + 4;
+    while out.len() < size {
+        let flag = bus.read8(p);
+        p += 1;
+        if flag & 0x80 != 0 {
+            // Compressed run: repeat one byte (len & 0x7F) + 3 times.
+            let len = (flag & 0x7F) as usize + 3;
+            let byte = bus.read8(p);
+            p += 1;
+            for _ in 0..len {
+                out.push(byte);
+            }
+        } else {
+            // Literal run of (len & 0x7F) + 1 bytes.
+            let len = (flag & 0x7F) as usize + 1;
+            for _ in 0..len {
+                out.push(bus.read8(p));
+                p += 1;
+            }
+        }
+    }
+    out.truncate(size);
+    write_out(bus, dst, &out, vram);
+}
+
+/// Diff (delta) unfiltering (SWI 0x16/0x17 8-bit, 0x18 16-bit). Each element is
+/// the running sum of the encoded differences. r0 = source, r1 = dest.
+fn diff_unfilter<B: Bus>(cpu: &mut Cpu, bus: &mut B, elem_bits: u32, vram: bool) {
+    let src = cpu.reg(0);
+    let dst = cpu.reg(1);
+    let size = (bus.read32(src) >> 8) as usize;
+    let mut out: Vec<u8> = Vec::with_capacity(size);
+    let mut p = src + 4;
+    if elem_bits == 8 {
+        let mut acc = 0u8;
+        while out.len() < size {
+            acc = acc.wrapping_add(bus.read8(p));
+            p += 1;
+            out.push(acc);
+        }
+    } else {
+        let mut acc = 0u16;
+        while out.len() < size {
+            acc = acc.wrapping_add(bus.read16(p));
+            p += 2;
+            out.push(acc as u8);
+            out.push((acc >> 8) as u8);
+        }
+    }
+    out.truncate(size);
+    write_out(bus, dst, &out, vram);
+}
+
+/// Huffman decompression (SWI 0x13). r0 = source, r1 = dest. Supports the 4-
+/// and 8-bit symbol sizes GBA graphics use.
+fn huffman<B: Bus>(cpu: &mut Cpu, bus: &mut B) {
+    let src = cpu.reg(0);
+    let dst = cpu.reg(1);
+    let header = bus.read32(src);
+    let sym_bits = header & 0xF;
+    let size = (header >> 8) as usize;
+    let tree_base = src + 5;
+    let tree_size = (u32::from(bus.read8(src + 4)) + 1) * 2;
+    let mut stream = src + 4 + tree_size;
+
+    let mut out: Vec<u8> = Vec::with_capacity(size);
+    let mut pending = 0u32; // assembled symbols, low nibbles first
+    let mut pending_bits = 0u32;
+    let mut node = tree_base; // offset of the current node
+    let mut root = true;
+
+    while out.len() < size {
+        let mut bits = bus.read32(stream);
+        stream += 4;
+        for _ in 0..32 {
+            let node_val = bus.read8(node);
+            if root {
+                // The root byte is the tree's own node data.
+                root = false;
+            }
+            let go_right = bits & 0x8000_0000 != 0;
+            bits <<= 1;
+            let offset = u32::from(node_val & 0x3F);
+            let next = (node & !1) + offset * 2 + 2;
+            let is_leaf = if go_right {
+                node_val & 0x40 != 0
+            } else {
+                node_val & 0x80 != 0
+            };
+            node = if go_right { next + 1 } else { next };
+            if is_leaf {
+                let sym = u32::from(bus.read8(node)) & ((1 << sym_bits) - 1);
+                pending |= sym << pending_bits;
+                pending_bits += sym_bits;
+                while pending_bits >= 8 {
+                    out.push(pending as u8);
+                    pending >>= 8;
+                    pending_bits -= 8;
+                }
+                node = tree_base;
+            }
+            if out.len() >= size {
+                break;
+            }
+        }
+    }
+    out.truncate(size);
+    // Huffman output is always written as 32-bit units to WRAM or VRAM.
+    let vram = dst >> 24 == 0x06;
+    write_out(bus, dst, &out, vram);
+}
+
+/// BitUnpack (SWI 0x10): expand packed 1/2/4/8-bit units to wider units with an
+/// optional base offset. r0 = source, r1 = dest, r2 = parameter block.
+fn bit_unpack<B: Bus>(cpu: &mut Cpu, bus: &mut B) {
+    let src = cpu.reg(0);
+    let dst = cpu.reg(1);
+    let info = cpu.reg(2);
+    let src_len = bus.read16(info) as usize;
+    let src_bits = u32::from(bus.read8(info + 2));
+    let dst_bits = u32::from(bus.read8(info + 3));
+    let base = bus.read32(info + 4);
+    let offset = base & 0x7FFF_FFFF;
+    let zero_offset = base & 0x8000_0000 != 0;
+
+    let mut out = 0u32;
+    let mut out_bits = 0u32;
+    let mut written = 0u32;
+    for i in 0..src_len {
+        let byte = bus.read8(src + i as u32);
+        let mut consumed = 0u32;
+        while consumed < 8 {
+            let unit = u32::from(byte >> consumed) & ((1 << src_bits) - 1);
+            consumed += src_bits;
+            let value = if unit != 0 || zero_offset {
+                unit + offset
+            } else {
+                0
+            };
+            out |= value << out_bits;
+            out_bits += dst_bits;
+            if out_bits == 32 {
+                bus.write32(dst + written, out);
+                written += 4;
+                out = 0;
+                out_bits = 0;
+            }
+        }
     }
 }
 

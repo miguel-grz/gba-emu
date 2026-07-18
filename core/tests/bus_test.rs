@@ -334,3 +334,80 @@ fn haltcnt_write_halts_in_lle_path() {
     cpu.step(&mut m);
     assert!(cpu.is_halted());
 }
+
+// -------------------------------------------------- BIOS decompression SWIs
+
+const EWRAM_SRC: u32 = 0x0200_0000;
+const EWRAM_DST: u32 = 0x0200_0100;
+
+fn decompress(number: u8, header: u32, payload: &[u8]) -> Vec<u8> {
+    let mut m = mem(&[]);
+    let mut cpu = Cpu::new();
+    cpu.skip_bios(&mut m);
+    m.write32(EWRAM_SRC, header);
+    for (i, &b) in payload.iter().enumerate() {
+        m.write8(EWRAM_SRC + 4 + i as u32, b);
+    }
+    cpu.set_reg(0, EWRAM_SRC);
+    cpu.set_reg(1, EWRAM_DST);
+    bios::hle_swi(&mut cpu, &mut m, number);
+    let size = (header >> 8) as usize;
+    (0..size as u32).map(|i| m.read8(EWRAM_DST + i)).collect()
+}
+
+#[test]
+fn lz77_decompresses_literals_and_backrefs() {
+    // 8 bytes: literal 'A', then copy 7 more from displacement 1.
+    let out = decompress(0x11, (8 << 8) | 0x10, &[0x40, 0x41, 0x40, 0x00]);
+    assert_eq!(out, vec![0x41; 8]);
+}
+
+#[test]
+fn rle_decompresses_runs() {
+    // A compressed run of 5 'B' bytes (flag 0x82 = run, len (2)+3).
+    let out = decompress(0x14, (5 << 8) | 0x30, &[0x82, 0x42]);
+    assert_eq!(out, vec![0x42; 5]);
+}
+
+#[test]
+fn diff8_unfilter_accumulates() {
+    // Differences 10, +1, +1, +1 -> 10, 11, 12, 13.
+    let out = decompress(0x16, (4 << 8) | 0x81, &[10, 1, 1, 1]);
+    assert_eq!(out, vec![10, 11, 12, 13]);
+}
+
+// ---------------------------------------------- HLE BIOS interrupt dispatch
+
+#[test]
+fn hle_irq_handler_calls_game_handler() {
+    // A game-style setup: an IRQ handler that acknowledges IF and bumps a
+    // counter, reached through the injected BIOS dispatcher.
+    let mut m = mem(&[0xEAFF_FFFE]); // main code: b .
+    let mut cpu = Cpu::new();
+    cpu.skip_bios(&mut m); // System mode, IRQs enabled
+
+    // Game IRQ handler in EWRAM at 0x0200_0200.
+    let handler: [u32; 9] = [
+        0xE3A0_0301, // mov  r0, #0x0400_0000
+        0xE280_0C02, // add  r0, r0, #0x200
+        0xE3A0_1001, // mov  r1, #1
+        0xE1C0_10B2, // strh r1, [r0, #2]   ; ack IF (vblank)
+        0xE3A0_2402, // mov  r2, #0x0200_0000
+        0xE592_3000, // ldr  r3, [r2]
+        0xE283_3001, // add  r3, r3, #1
+        0xE582_3000, // str  r3, [r2]       ; counter++
+        0xE12F_FF1E, // bx   lr
+    ];
+    for (i, &w) in handler.iter().enumerate() {
+        m.write32(0x0200_0200 + i as u32 * 4, w);
+    }
+    m.write32(0x0300_7FFC, 0x0200_0200); // BIOS user IRQ handler pointer
+    m.write16(IE, irq::VBLANK);
+    m.write16(IME, 1);
+
+    m.raise_irq(irq::VBLANK);
+    for _ in 0..40 {
+        cpu.step(&mut m);
+    }
+    assert_eq!(m.read32(0x0200_0000), 1, "the game's IRQ handler ran once");
+}
