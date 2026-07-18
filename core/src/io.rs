@@ -8,9 +8,9 @@
 //! back what it wrote without crashing; their *behavior* arrives with the
 //! peripheral that owns them.
 //!
-//! A few registers get a deliberate stub so headless code makes progress
-//! before the PPU exists: `KEYINPUT` reads as "no keys pressed" and `VCOUNT`
-//! advances as it is polled. Both are replaced by real hardware in Phase 3.
+//! `KEYINPUT` reads as "no keys pressed" until input handling arrives. The
+//! display registers (DISPCNT/DISPSTAT/VCOUNT/…) live in [`crate::ppu`], which
+//! [`crate::memory::Memory`] routes to directly; they are not handled here.
 
 /// Interrupt source bits, shared by `IE` and `IF`.
 pub mod irq {
@@ -42,8 +42,6 @@ pub struct Io {
     /// Generic backing store for not-yet-implemented registers, so
     /// read-after-write works. Indexed by (offset & 0x3FF) >> 1.
     scratch: [u16; 0x200],
-    /// Poll counter driving the temporary `VCOUNT` stub.
-    vcount_poll: u32,
 }
 
 impl Io {
@@ -56,7 +54,6 @@ impl Io {
             postflg: 0,
             halt_request: false,
             scratch: [0; 0x200],
-            vcount_poll: 0,
         }
     }
 
@@ -82,10 +79,6 @@ impl Io {
         std::mem::replace(&mut self.halt_request, false)
     }
 
-    fn vcount(&self) -> u16 {
-        ((self.vcount_poll / 8) % 228) as u16
-    }
-
     pub fn read8(&mut self, offset: u32) -> u8 {
         let half = self.read16(offset & !1);
         if offset & 1 == 0 {
@@ -97,15 +90,6 @@ impl Io {
 
     pub fn read16(&mut self, offset: u32) -> u16 {
         match offset & 0x3FE {
-            // DISPSTAT (bit 0 = vblank). Temporary stub until the PPU exists.
-            0x0004 => {
-                self.vcount_poll = self.vcount_poll.wrapping_add(1);
-                u16::from(self.vcount() >= 160)
-            }
-            0x0006 => {
-                self.vcount_poll = self.vcount_poll.wrapping_add(1);
-                self.vcount()
-            }
             // KEYINPUT: active-low, 0x03FF = nothing pressed.
             0x0130 => 0x03FF,
             0x0200 => self.ie,
@@ -152,8 +136,8 @@ impl Io {
                     self.halt_request = true;
                 }
             }
-            // Read-only stubs: ignore writes to KEYINPUT/VCOUNT.
-            0x0006 | 0x0130 => {}
+            // KEYINPUT is read-only.
+            0x0130 => {}
             other => self.scratch[(other >> 1) as usize] = value,
         }
     }

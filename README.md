@@ -14,7 +14,9 @@ polished, modern UI.
 |-------|-----------|--------|
 | 1 | ARM7TDMI CPU (ARM + Thumb, banked registers, pipeline, exceptions) | ✅ done |
 | 2 | Memory/bus (I/O registers, waitstate timing, open bus, BIOS HLE + LLE) | ✅ done |
-| 3–5 | PPU (tiled, sprites, affine/bitmap modes) | — |
+| 3 | PPU tiled modes 0–2 (text backgrounds, scroll, priority, display IRQs) | ✅ done |
+| 4 | Sprites (OBJ) | — |
+| 5 | Affine + bitmap modes 3–5, blending/windowing | — |
 | 6 | DMA, timers, interrupt scheduling | — |
 | 7 | APU | — |
 | 8 | Tauri shell + UI | — |
@@ -30,13 +32,29 @@ core/
 │   │   └── thumb.rs    # 16-bit Thumb instruction set
 │   ├── memory.rs       # Bus trait + full memory map, timing, open bus
 │   ├── io.rs           # I/O register file (interrupt controller, WAITCNT, …)
+│   ├── ppu.rs          # PPU: text background rendering + display timing/IRQs
 │   ├── timing.rs       # waitstate / S-N cycle model
 │   ├── bios.rs         # BIOS SWI handling (HLE routines + LLE fallback)
+│   ├── system.rs       # Gba: CPU + memory + PPU, run_frame loop
 │   └── lib.rs
+├── examples/
+│   └── render_scene.rs # headless PPU demo → 24-bit BMP
 └── tests/
     ├── cpu_test.rs     # hand-assembled instruction tests + headless ROM harness
-    └── bus_test.rs     # I/O, timing, BIOS HLE, open bus, interrupts/halt
+    ├── bus_test.rs     # I/O, timing, BIOS HLE, open bus, interrupts/halt
+    └── ppu_test.rs     # PPU registers, display timing/IRQs, text rendering
 ```
+
+## Seeing the PPU work
+
+No game ROM needed — this renders a hand-built tiled scene to a BMP:
+
+```sh
+cargo run --example render_scene -- scene.bmp
+```
+
+It exercises the text renderer end to end (multiple tiles, palette, screen-map
+addressing, sub-tile detail, transparency over the backdrop).
 
 ## Building and testing
 
@@ -98,3 +116,21 @@ via `Memory::load_bios`.
   `0x14000` for now and becomes mode-dependent with the Phase 3 PPU.
 - **Still stubbed**: cartridge SRAM/Flash/EEPROM saves read as 0, and BIOS
   read-protection is not enforced. Neither affects CPU test ROMs.
+
+## Accuracy notes (Phase 3 trade-offs)
+
+- **Scope**: text (tiled) backgrounds of modes 0–2 only. Mode 1's affine BG2
+  and mode 2's affine backgrounds render nothing yet; sprites, the bitmap
+  modes 3–5, windows, mosaic and blending are Phases 4–5. The register storage
+  for all of them already exists, so reads/writes behave — only rendering is
+  absent.
+- **Renderer**: scanline-based — each visible line is drawn at the start of its
+  HBlank, so mid-frame register changes take effect on later lines as on
+  hardware. Compositing is priority-then-BG-index over the backdrop; index 0 of
+  a (sub-)palette is transparent.
+- **Display timing** is exact at line granularity (1232 cycles/line, 228 lines,
+  VBlank at 160). VBlank/HBlank/VCount interrupts fire through the real
+  interrupt controller, which is what activates the Phase-2 `IntrWait` SWIs.
+  Sub-line dot timing is modeled only enough to place the HBlank flag; the
+  precise HBlank IRQ *offset* within a line is refined when the Phase-6
+  scheduler needs it.

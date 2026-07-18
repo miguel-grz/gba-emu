@@ -3,6 +3,11 @@
 # macOS
 .DS_Store
 
+# Generated render dumps
+*.bmp
+*.ppm
+*.png
+
 # Test ROMs are fetched locally, never committed
 core/tests/roms/
 *.gba

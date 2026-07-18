@@ -546,7 +546,8 @@ fn run_rom(path: &std::path::Path, max_steps: u64) -> (Cpu, Memory, u64) {
     let mut steps = 0;
     while steps < max_steps {
         let pc = cpu.pc();
-        cpu.step(&mut mem);
+        let cycles = cpu.step(&mut mem);
+        mem.tick(cycles); // advance the PPU so display timing progresses
         steps += 1;
         if cpu.pc() == pc {
             break; // tight infinite loop: the ROM is done (pass or fail)

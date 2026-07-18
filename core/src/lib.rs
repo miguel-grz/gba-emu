@@ -10,10 +10,14 @@ pub mod bios;
 pub mod cpu;
 pub mod io;
 pub mod memory;
+pub mod ppu;
+pub mod system;
 pub mod timing;
 
 pub use cpu::{Cpu, Mode};
 pub use memory::{Bus, Memory};
+pub use ppu::Ppu;
+pub use system::Gba;
 
 use std::fmt;
 

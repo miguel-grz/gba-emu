@@ -13,9 +13,14 @@
 //! from it). Neither is needed to run CPU test ROMs.
 
 use crate::io::Io;
+use crate::ppu::Ppu;
 use crate::timing::{access_cycles, Region, SeqTracker, Width};
 use crate::CoreError;
 use std::path::Path;
+
+/// PPU registers occupy 0x0400_0000..0x0400_0060; the rest of the I/O block
+/// (interrupt controller, WAITCNT, keypad, …) is handled by [`Io`].
+const PPU_REG_END: u32 = 0x60;
 
 pub const BIOS_SIZE: usize = 16 * 1024;
 pub const EWRAM_SIZE: usize = 256 * 1024;
@@ -89,6 +94,7 @@ pub struct Memory {
     oam: Vec<u8>,
     rom: Vec<u8>,
     io: Io,
+    ppu: Ppu,
     has_bios: bool,
     /// Waitstate cycles accumulated since the CPU last drained them.
     access_cycles: u32,
@@ -116,6 +122,7 @@ impl Memory {
             oam: vec![0; OAM_SIZE],
             rom,
             io: Io::new(),
+            ppu: Ppu::new(),
             has_bios: false,
             access_cycles: 0,
             seq: SeqTracker::default(),
@@ -151,7 +158,32 @@ impl Memory {
         self.io.raise_irq(bits);
     }
 
-    /// Read-only view of VRAM, for future headless render checks.
+    /// Advance the PPU (and, in later phases, timers/DMA) by `cycles`, raising
+    /// any resulting interrupts. Call this after each `Cpu::step` with the
+    /// cycles it reported.
+    pub fn tick(&mut self, cycles: u64) {
+        let irqs = self.ppu.tick(cycles, &self.vram, &self.palette, &self.oam);
+        if irqs != 0 {
+            self.io.raise_irq(irqs);
+        }
+    }
+
+    /// The PPU's 15-bit BGR555 framebuffer (240×160).
+    pub fn framebuffer(&self) -> &[u16] {
+        self.ppu.framebuffer()
+    }
+
+    /// Take (and clear) the "a frame finished drawing" flag from the PPU.
+    pub fn take_frame_ready(&mut self) -> bool {
+        self.ppu.take_frame_ready()
+    }
+
+    /// Current scanline (VCOUNT).
+    pub fn vcount(&self) -> u16 {
+        self.ppu.vcount()
+    }
+
+    /// Read-only view of VRAM, for headless render checks.
     pub fn vram(&self) -> &[u8] {
         &self.vram
     }
@@ -203,11 +235,22 @@ impl Memory {
             }
             0x02 => Self::load_slice(&self.ewram, EWRAM_SIZE, addr as usize, width),
             0x03 => Self::load_slice(&self.iwram, IWRAM_SIZE, addr as usize, width),
-            0x04 => match width {
-                Width::Byte => u32::from(self.io.read8(addr & 0x3FF)),
-                Width::Half => u32::from(self.io.read16(addr & 0x3FF)),
-                Width::Word => self.io.read32(addr & 0x3FF),
-            },
+            0x04 => {
+                let off = addr & 0x3FF;
+                if off < PPU_REG_END {
+                    match width {
+                        Width::Byte => u32::from(self.ppu.read8(off)),
+                        Width::Half => u32::from(self.ppu.read16(off)),
+                        Width::Word => self.ppu.read32(off),
+                    }
+                } else {
+                    match width {
+                        Width::Byte => u32::from(self.io.read8(off)),
+                        Width::Half => u32::from(self.io.read16(off)),
+                        Width::Word => self.io.read32(off),
+                    }
+                }
+            }
             0x05 => Self::load_slice(&self.palette, PALETTE_SIZE, addr as usize, width),
             0x06 => {
                 let idx = Self::vram_index(addr);
@@ -247,11 +290,22 @@ impl Memory {
         match addr >> 24 {
             0x02 => Self::store_slice(&mut self.ewram, EWRAM_SIZE, addr as usize, width, value),
             0x03 => Self::store_slice(&mut self.iwram, IWRAM_SIZE, addr as usize, width, value),
-            0x04 => match width {
-                Width::Byte => self.io.write8(addr & 0x3FF, value as u8),
-                Width::Half => self.io.write16(addr & 0x3FF, value as u16),
-                Width::Word => self.io.write32(addr & 0x3FF, value),
-            },
+            0x04 => {
+                let off = addr & 0x3FF;
+                if off < PPU_REG_END {
+                    match width {
+                        Width::Byte => self.ppu.write8(off, value as u8),
+                        Width::Half => self.ppu.write16(off, value as u16),
+                        Width::Word => self.ppu.write32(off, value),
+                    }
+                } else {
+                    match width {
+                        Width::Byte => self.io.write8(off, value as u8),
+                        Width::Half => self.io.write16(off, value as u16),
+                        Width::Word => self.io.write32(off, value),
+                    }
+                }
+            }
             0x05 => {
                 // Palette RAM has a 16-bit bus: an 8-bit write duplicates the
                 // byte across the whole halfword.
