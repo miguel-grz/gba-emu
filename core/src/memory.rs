@@ -16,6 +16,7 @@ use crate::apu::Apu;
 use crate::dma::{self, cnt, Dma};
 use crate::io::{irq, Io};
 use crate::ppu::Ppu;
+use crate::save::{self, Save};
 use crate::timers::Timers;
 use crate::timing::{access_cycles, Region, SeqTracker, Width};
 use crate::CoreError;
@@ -112,6 +113,7 @@ pub struct Memory {
     apu: Apu,
     dma: Dma,
     timers: Timers,
+    save: Save,
     has_bios: bool,
     /// Waitstate cycles accumulated since the CPU last drained them.
     access_cycles: u32,
@@ -132,6 +134,7 @@ impl Memory {
         }
         let mut bios = vec![0; BIOS_SIZE];
         install_hle_irq_handler(&mut bios);
+        let save = Save::new(save::detect(&rom));
         Ok(Self {
             bios,
             ewram: vec![0; EWRAM_SIZE],
@@ -145,6 +148,7 @@ impl Memory {
             apu: Apu::new(),
             dma: Dma::new(),
             timers: Timers::new(),
+            save,
             has_bios: false,
             access_cycles: 0,
             seq: SeqTracker::default(),
@@ -412,8 +416,16 @@ impl Memory {
                     }
                 }
             }
-            // SRAM/Flash/EEPROM: stubbed until the cartridge module exists.
-            0x0E | 0x0F => 0,
+            // Cartridge save memory (SRAM/Flash) is an 8-bit bus; a wider read
+            // sees the addressed byte replicated across the value.
+            0x0E | 0x0F => {
+                let byte = u32::from(self.save.read(addr));
+                match width {
+                    Width::Byte => byte,
+                    Width::Half => byte * 0x0101,
+                    Width::Word => byte * 0x0101_0101,
+                }
+            }
             _ => self.open_bus,
         }
     }
@@ -465,7 +477,9 @@ impl Memory {
                 Self::store_slice(&mut self.oam, OAM_SIZE, addr as usize, width, value)
             }
             0x07 => {}
-            // BIOS and ROM are not writable; SRAM saves are stubbed for now.
+            // Cartridge save memory: byte-addressed (Flash command protocol).
+            0x0E | 0x0F => self.save.write(addr, value as u8),
+            // BIOS and ROM are not writable.
             _ => {}
         }
     }

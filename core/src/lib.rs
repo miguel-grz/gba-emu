@@ -13,6 +13,7 @@ pub mod dma;
 pub mod io;
 pub mod memory;
 pub mod ppu;
+pub mod save;
 pub mod system;
 pub mod timers;
 pub mod timing;

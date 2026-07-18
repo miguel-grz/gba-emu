@@ -411,3 +411,47 @@ fn hle_irq_handler_calls_game_handler() {
     }
     assert_eq!(m.read32(0x0200_0000), 1, "the game's IRQ handler ran once");
 }
+
+// -------------------------------------------------------- cartridge saves
+
+fn rom_with(marker: &[u8]) -> Vec<u8> {
+    let mut rom = vec![0u8; 0x400];
+    rom[0x100..0x100 + marker.len()].copy_from_slice(marker);
+    rom
+}
+
+#[test]
+fn sram_reads_back_writes() {
+    let mut m = Memory::new(rom_with(b"SRAM_V113")).unwrap();
+    m.write8(0x0E00_0000, 0x42);
+    m.write8(0x0E00_1234, 0x99);
+    assert_eq!(m.read8(0x0E00_0000), 0x42);
+    assert_eq!(m.read8(0x0E00_1234), 0x99);
+}
+
+#[test]
+fn flash128_reports_chip_id() {
+    let mut m = Memory::new(rom_with(b"FLASH1M_V102")).unwrap();
+    // Enter ID/autoselect mode via the unlock sequence.
+    m.write8(0x0E00_5555, 0xAA);
+    m.write8(0x0E00_2AAA, 0x55);
+    m.write8(0x0E00_5555, 0x90);
+    assert_eq!(m.read8(0x0E00_0000), 0x62, "Sanyo manufacturer id");
+    assert_eq!(m.read8(0x0E00_0001), 0x13, "128K device id");
+    // Exit ID mode; reads return flash data again.
+    m.write8(0x0E00_5555, 0xAA);
+    m.write8(0x0E00_2AAA, 0x55);
+    m.write8(0x0E00_5555, 0xF0);
+    assert_eq!(m.read8(0x0E00_0000), 0xFF, "erased flash reads 0xFF");
+}
+
+#[test]
+fn flash_programs_a_byte() {
+    let mut m = Memory::new(rom_with(b"FLASH1M_V102")).unwrap();
+    // Program 0x3C at offset 0x20 (unlock, 0xA0, then the data write).
+    m.write8(0x0E00_5555, 0xAA);
+    m.write8(0x0E00_2AAA, 0x55);
+    m.write8(0x0E00_5555, 0xA0);
+    m.write8(0x0E00_0020, 0x3C);
+    assert_eq!(m.read8(0x0E00_0020), 0x3C);
+}
