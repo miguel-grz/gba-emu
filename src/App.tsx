@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_KEYMAP, ensureWasm, generateThumbnail, GbaRunner } from "./lib/gba";
 import { load, store } from "./lib/persist";
 import {
@@ -6,11 +6,15 @@ import {
   GameMeta,
   getRom,
   listGames,
+  markPlayed,
   removeGame,
   setThumbnail,
+  toggleFavorite,
 } from "./lib/library";
+import { Sidebar, Section } from "./components/Sidebar";
 import { Library } from "./components/Library";
 import { Console } from "./components/Console";
+import { Settings } from "./components/Settings";
 
 interface Playing {
   name: string;
@@ -21,6 +25,8 @@ export function App() {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [games, setGames] = useState<GameMeta[]>([]);
+  const [section, setSection] = useState<Section>("library");
+  const [search, setSearch] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [playing, setPlaying] = useState<Playing | null>(null);
   const [fps, setFps] = useState(0);
@@ -63,14 +69,18 @@ export function App() {
     [refreshGames],
   );
 
-  const playGame = useCallback(async (name: string) => {
-    const rom = await getRom(name);
-    if (!rom) {
-      setError("ROM not found");
-      return;
-    }
-    setPlaying({ name, rom });
-  }, []);
+  const playGame = useCallback(
+    async (name: string) => {
+      const rom = await getRom(name);
+      if (!rom) {
+        setError("ROM not found");
+        return;
+      }
+      await markPlayed(name);
+      setPlaying({ name, rom });
+    },
+    [],
+  );
 
   const removeOne = useCallback(
     async (name: string) => {
@@ -80,10 +90,40 @@ export function App() {
     [refreshGames],
   );
 
+  const toggleFav = useCallback(
+    async (name: string, favorite: boolean) => {
+      await toggleFavorite(name, favorite);
+      await refreshGames();
+    },
+    [refreshGames],
+  );
+
   const eject = useCallback(() => {
     setPlaying(null);
     setFps(0);
+    refreshGames();
+  }, [refreshGames]);
+
+  const navigate = useCallback((s: Section) => {
+    setPlaying(null);
+    setSection(s);
   }, []);
+
+  // Games shown in the current section, filtered by the search box.
+  const visibleGames = useMemo(() => {
+    let list = games;
+    if (section === "favorites") list = list.filter((g) => g.favorite);
+    else if (section === "recents")
+      list = list.filter((g) => g.lastPlayed).sort((a, b) => (b.lastPlayed ?? 0) - (a.lastPlayed ?? 0));
+    const q = search.trim().toLowerCase();
+    if (q) list = list.filter((g) => g.name.toLowerCase().includes(q));
+    return list;
+  }, [games, section, search]);
+
+  const counts = useMemo(
+    () => ({ library: games.length, favorites: games.filter((g) => g.favorite).length }),
+    [games],
+  );
 
   // Drive the emulator whenever a game is being played.
   useEffect(() => {
@@ -166,39 +206,37 @@ export function App() {
 
   return (
     <div className="app">
-      <header className="topbar">
-        <span className="logo" aria-hidden>
-          ▸
-        </span>
-        <h1>Pocket</h1>
-        <span className="subtitle">a modern Game Boy Advance emulator</span>
-      </header>
+      <Sidebar active={section} counts={counts} onSelect={navigate} />
 
-      {playing ? (
-        <Console
-          canvasRef={canvasRef}
-          fileName={playing.name}
-          fps={fps}
-          flash={flash}
-          onEject={eject}
-          onSave={saveState}
-          onLoad={loadState}
-        />
-      ) : (
-        <Library
-          ready={ready}
-          games={games}
-          busy={busy}
-          error={error}
-          onAdd={addRom}
-          onPlay={playGame}
-          onRemove={removeOne}
-        />
-      )}
-
-      <footer className="credits">
-        Built from scratch in Rust · CPU · PPU · APU · WebAssembly
-      </footer>
+      <main className="main">
+        {playing ? (
+          <Console
+            canvasRef={canvasRef}
+            fileName={playing.name}
+            fps={fps}
+            flash={flash}
+            onEject={eject}
+            onSave={saveState}
+            onLoad={loadState}
+          />
+        ) : section === "settings" ? (
+          <Settings />
+        ) : (
+          <Library
+            section={section}
+            ready={ready}
+            games={visibleGames}
+            busy={busy}
+            error={error}
+            search={search}
+            onSearch={setSearch}
+            onAdd={addRom}
+            onPlay={playGame}
+            onToggleFav={toggleFav}
+            onRemove={removeOne}
+          />
+        )}
+      </main>
     </div>
   );
 }

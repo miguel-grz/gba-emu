@@ -11,71 +11,56 @@ interface Props {
 }
 
 const CONTROLS: [string, string][] = [
-  ["D-Pad", "Arrow keys"],
+  ["D-Pad", "Arrows"],
   ["A / B", "X / Z"],
   ["L / R", "A / S"],
-  ["Start / Select", "Enter / Backspace"],
+  ["Start", "Enter"],
+  ["Select", "Backspace"],
 ];
 
-export function Console({
-  canvasRef,
-  fileName,
-  fps,
-  flash,
-  onEject,
-  onSave,
-  onLoad,
-}: Props) {
+export function Console({ canvasRef, fileName, fps, flash, onEject, onSave, onLoad }: Props) {
   return (
-    <main className="stage">
-      <div className="console">
-        <div className="console__top">
-          <span className="cart-name">{fileName}</span>
-          <span className="fps" title="frames per second">
-            {fps} fps
-          </span>
-        </div>
+    <section className="player view">
+      <div className="player__bar">
+        <button className="btn btn--ghost" style={{ flex: "none" }} onClick={onEject}>
+          ‹ Library
+        </button>
+        <h2>{fileName.replace(/\.(gba|bin)$/i, "")}</h2>
+        <span className="player__fps">{fps} fps</span>
+      </div>
 
+      <div className="player__stage">
         <div className="screen">
           <canvas ref={canvasRef} className="screen__canvas" />
           {flash && <div className="flash">{flash}</div>}
         </div>
 
-        <div className="console__bottom">
-          <div className="dot dot--a" />
-          <div className="dot dot--b" />
-          <div className="brand">POCKET</div>
-          <button className="btn btn--eject" onClick={onEject}>
-            ⏏ Eject
-          </button>
-        </div>
-      </div>
+        <div className="dock">
+          <div className="panel">
+            <h3>Save state</h3>
+            <div className="state-buttons">
+              <button className="btn btn--ghost" onClick={onSave}>
+                Save
+              </button>
+              <button className="btn btn--ghost" onClick={onLoad}>
+                Load
+              </button>
+            </div>
+          </div>
 
-      <aside className="sidebar">
-        <div className="state-panel">
-          <h3>Save state</h3>
-          <div className="state-buttons">
-            <button className="btn btn--save" onClick={onSave}>
-              💾 Save
-            </button>
-            <button className="btn btn--load" onClick={onLoad}>
-              ↺ Load
-            </button>
+          <div className="panel">
+            <h3>Controls</h3>
+            <ul className="keys">
+              {CONTROLS.map(([label, keys]) => (
+                <li key={label}>
+                  <span>{label}</span>
+                  <kbd>{keys}</kbd>
+                </li>
+              ))}
+            </ul>
           </div>
         </div>
-
-        <div className="controls">
-          <h3>Controls</h3>
-          <ul>
-            {CONTROLS.map(([label, keys]) => (
-              <li key={label}>
-                <span>{label}</span>
-                <kbd>{keys}</kbd>
-              </li>
-            ))}
-          </ul>
-        </div>
-      </aside>
-    </main>
+      </div>
+    </section>
   );
 }

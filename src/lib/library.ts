@@ -12,6 +12,8 @@ export interface GameMeta {
   size: number;
   addedAt: number;
   thumbnail?: string; // PNG data URL
+  favorite?: boolean;
+  lastPlayed?: number;
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -51,14 +53,23 @@ export async function addGame(name: string, rom: Uint8Array): Promise<GameMeta> 
   return meta;
 }
 
-export async function setThumbnail(name: string, thumbnail: string): Promise<void> {
+async function updateMeta(name: string, patch: Partial<GameMeta>): Promise<void> {
   const db = await openDb();
   const tx = db.transaction(META, "readwrite");
   const meta = await promisify(tx.objectStore(META).get(name) as IDBRequest<GameMeta>);
-  if (meta) {
-    meta.thumbnail = thumbnail;
-    tx.objectStore(META).put(meta);
-  }
+  if (meta) tx.objectStore(META).put({ ...meta, ...patch });
+}
+
+export function setThumbnail(name: string, thumbnail: string): Promise<void> {
+  return updateMeta(name, { thumbnail });
+}
+
+export function toggleFavorite(name: string, favorite: boolean): Promise<void> {
+  return updateMeta(name, { favorite });
+}
+
+export function markPlayed(name: string): Promise<void> {
+  return updateMeta(name, { lastPlayed: Date.now() });
 }
 
 export async function getRom(name: string): Promise<Uint8Array | null> {
