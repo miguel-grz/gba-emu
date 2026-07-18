@@ -12,15 +12,21 @@
 //! BIOS region reads as its last fetched opcode unless the CPU is executing
 //! from it). Neither is needed to run CPU test ROMs.
 
-use crate::io::Io;
+use crate::dma::{self, cnt, Dma};
+use crate::io::{irq, Io};
 use crate::ppu::Ppu;
+use crate::timers::Timers;
 use crate::timing::{access_cycles, Region, SeqTracker, Width};
 use crate::CoreError;
 use std::path::Path;
 
-/// PPU registers occupy 0x0400_0000..0x0400_0060; the rest of the I/O block
-/// (interrupt controller, WAITCNT, keypad, …) is handled by [`Io`].
+/// I/O sub-block boundaries within 0x0400_0000. Offsets outside the PPU/DMA/
+/// timer ranges fall through to [`Io`] (interrupt controller, WAITCNT, …).
 const PPU_REG_END: u32 = 0x60;
+const DMA_REG_START: u32 = 0xB0;
+const DMA_REG_END: u32 = 0xE0;
+const TIMER_REG_START: u32 = 0x100;
+const TIMER_REG_END: u32 = 0x110;
 
 pub const BIOS_SIZE: usize = 16 * 1024;
 pub const EWRAM_SIZE: usize = 256 * 1024;
@@ -95,6 +101,8 @@ pub struct Memory {
     rom: Vec<u8>,
     io: Io,
     ppu: Ppu,
+    dma: Dma,
+    timers: Timers,
     has_bios: bool,
     /// Waitstate cycles accumulated since the CPU last drained them.
     access_cycles: u32,
@@ -123,6 +131,8 @@ impl Memory {
             rom,
             io: Io::new(),
             ppu: Ppu::new(),
+            dma: Dma::new(),
+            timers: Timers::new(),
             has_bios: false,
             access_cycles: 0,
             seq: SeqTracker::default(),
@@ -158,13 +168,87 @@ impl Memory {
         self.io.raise_irq(bits);
     }
 
-    /// Advance the PPU (and, in later phases, timers/DMA) by `cycles`, raising
-    /// any resulting interrupts. Call this after each `Cpu::step` with the
-    /// cycles it reported.
+    /// Advance the timers, PPU and DMA by `cycles`, raising any resulting
+    /// interrupts. Call this after each `Cpu::step` with the cycles it
+    /// reported.
     pub fn tick(&mut self, cycles: u64) {
-        let irqs = self.ppu.tick(cycles, &self.vram, &self.palette, &self.oam);
+        let timer_irqs = self.timers.tick(cycles);
+        let out = self.ppu.tick(cycles, &self.vram, &self.palette, &self.oam);
+        let irqs = timer_irqs | out.irqs;
         if irqs != 0 {
             self.io.raise_irq(irqs);
+        }
+        self.run_dma(out.vblank_start, out.hblank_start);
+    }
+
+    /// Run any DMA channels triggered this step. Channels are serviced in
+    /// priority order (0 highest), each transferring atomically.
+    fn run_dma(&mut self, vblank: bool, hblank: bool) {
+        for i in 0..4 {
+            let ctrl = self.dma.ch[i].control;
+            if ctrl & cnt::ENABLE == 0 {
+                continue;
+            }
+            let timing = (ctrl >> cnt::TIMING) & 0x3;
+            let triggered = match timing {
+                0 => std::mem::take(&mut self.dma.ch[i].pending),
+                1 => vblank,
+                2 => hblank,
+                _ => false, // special (sound FIFO / video) — Phase 7
+            };
+            if triggered {
+                self.transfer_dma(i);
+            }
+        }
+    }
+
+    /// Perform one channel's transfer, then apply repeat/reload or disable and
+    /// raise the completion interrupt.
+    fn transfer_dma(&mut self, i: usize) {
+        let ctrl = self.dma.ch[i].control;
+        let word = ctrl & cnt::WORD != 0;
+        let width = if word { Width::Word } else { Width::Half };
+        let step: u32 = if word { 4 } else { 2 };
+        let dst_ctl = (ctrl >> cnt::DEST_CTL) & 0x3;
+        let src_ctl = (ctrl >> cnt::SRC_CTL) & 0x3;
+
+        let mut src = self.dma.ch[i].src;
+        let mut dst = self.dma.ch[i].dst;
+        let count = self.dma.ch[i].remaining;
+
+        let advance = |addr: u32, mode: u16| match mode {
+            dma::ADDR_DEC => addr.wrapping_sub(step),
+            dma::ADDR_FIXED => addr,
+            _ => addr.wrapping_add(step), // inc / inc+reload
+        };
+        let align = if word { !3 } else { !1 };
+
+        for _ in 0..count {
+            let value = self.decode_read(src & align, width);
+            self.decode_write(dst & align, width, value);
+            src = advance(src, src_ctl);
+            dst = advance(dst, dst_ctl);
+        }
+        self.dma.ch[i].src = src;
+
+        let repeat = ctrl & cnt::REPEAT != 0;
+        let timing = (ctrl >> cnt::TIMING) & 0x3;
+        if repeat && timing != 0 {
+            // Reload the count; reload the destination too if configured.
+            let c = u32::from(self.dma.ch[i].count) & (dma::count_max(i) - 1);
+            self.dma.ch[i].remaining = if c == 0 { dma::count_max(i) } else { c };
+            if dst_ctl == dma::ADDR_INC_RELOAD {
+                self.dma.ch[i].dst = self.dma.ch[i].dad & dma::dst_mask(i);
+            } else {
+                self.dma.ch[i].dst = dst;
+            }
+        } else {
+            self.dma.ch[i].dst = dst;
+            self.dma.ch[i].control &= !cnt::ENABLE;
+        }
+
+        if ctrl & cnt::IRQ != 0 {
+            self.io.raise_irq(irq::DMA0 << i);
         }
     }
 
@@ -235,22 +319,7 @@ impl Memory {
             }
             0x02 => Self::load_slice(&self.ewram, EWRAM_SIZE, addr as usize, width),
             0x03 => Self::load_slice(&self.iwram, IWRAM_SIZE, addr as usize, width),
-            0x04 => {
-                let off = addr & 0x3FF;
-                if off < PPU_REG_END {
-                    match width {
-                        Width::Byte => u32::from(self.ppu.read8(off)),
-                        Width::Half => u32::from(self.ppu.read16(off)),
-                        Width::Word => self.ppu.read32(off),
-                    }
-                } else {
-                    match width {
-                        Width::Byte => u32::from(self.io.read8(off)),
-                        Width::Half => u32::from(self.io.read16(off)),
-                        Width::Word => self.io.read32(off),
-                    }
-                }
-            }
+            0x04 => self.io_read(addr & 0x3FF, width),
             0x05 => Self::load_slice(&self.palette, PALETTE_SIZE, addr as usize, width),
             0x06 => {
                 let idx = Self::vram_index(addr);
@@ -290,22 +359,7 @@ impl Memory {
         match addr >> 24 {
             0x02 => Self::store_slice(&mut self.ewram, EWRAM_SIZE, addr as usize, width, value),
             0x03 => Self::store_slice(&mut self.iwram, IWRAM_SIZE, addr as usize, width, value),
-            0x04 => {
-                let off = addr & 0x3FF;
-                if off < PPU_REG_END {
-                    match width {
-                        Width::Byte => self.ppu.write8(off, value as u8),
-                        Width::Half => self.ppu.write16(off, value as u16),
-                        Width::Word => self.ppu.write32(off, value),
-                    }
-                } else {
-                    match width {
-                        Width::Byte => self.io.write8(off, value as u8),
-                        Width::Half => self.io.write16(off, value as u16),
-                        Width::Word => self.io.write32(off, value),
-                    }
-                }
-            }
+            0x04 => self.io_write(addr & 0x3FF, width, value),
             0x05 => {
                 // Palette RAM has a 16-bit bus: an 8-bit write duplicates the
                 // byte across the whole halfword.
@@ -349,6 +403,64 @@ impl Memory {
             0x07 => {}
             // BIOS and ROM are not writable; SRAM saves are stubbed for now.
             _ => {}
+        }
+    }
+
+    /// Dispatch an I/O read (offset within 0x000..0x400) to the PPU, DMA,
+    /// timer, or general I/O register file.
+    fn io_read(&mut self, off: u32, width: Width) -> u32 {
+        if off < PPU_REG_END {
+            match width {
+                Width::Byte => u32::from(self.ppu.read8(off)),
+                Width::Half => u32::from(self.ppu.read16(off)),
+                Width::Word => self.ppu.read32(off),
+            }
+        } else if (DMA_REG_START..DMA_REG_END).contains(&off) {
+            match width {
+                Width::Byte => u32::from(self.dma.read8(off)),
+                Width::Half => u32::from(self.dma.read16(off)),
+                Width::Word => self.dma.read32(off),
+            }
+        } else if (TIMER_REG_START..TIMER_REG_END).contains(&off) {
+            match width {
+                Width::Byte => u32::from(self.timers.read8(off)),
+                Width::Half => u32::from(self.timers.read16(off)),
+                Width::Word => self.timers.read32(off),
+            }
+        } else {
+            match width {
+                Width::Byte => u32::from(self.io.read8(off)),
+                Width::Half => u32::from(self.io.read16(off)),
+                Width::Word => self.io.read32(off),
+            }
+        }
+    }
+
+    fn io_write(&mut self, off: u32, width: Width, value: u32) {
+        if off < PPU_REG_END {
+            match width {
+                Width::Byte => self.ppu.write8(off, value as u8),
+                Width::Half => self.ppu.write16(off, value as u16),
+                Width::Word => self.ppu.write32(off, value),
+            }
+        } else if (DMA_REG_START..DMA_REG_END).contains(&off) {
+            match width {
+                Width::Byte => self.dma.write8(off, value as u8),
+                Width::Half => self.dma.write16(off, value as u16),
+                Width::Word => self.dma.write32(off, value),
+            }
+        } else if (TIMER_REG_START..TIMER_REG_END).contains(&off) {
+            match width {
+                Width::Byte => self.timers.write8(off, value as u8),
+                Width::Half => self.timers.write16(off, value as u16),
+                Width::Word => self.timers.write32(off, value),
+            }
+        } else {
+            match width {
+                Width::Byte => self.io.write8(off, value as u8),
+                Width::Half => self.io.write16(off, value as u16),
+                Width::Word => self.io.write32(off, value),
+            }
         }
     }
 

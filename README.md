@@ -16,8 +16,8 @@ polished, modern UI.
 | 2 | Memory/bus (I/O registers, waitstate timing, open bus, BIOS HLE + LLE) | ✅ done |
 | 3 | PPU tiled modes 0–2 (text backgrounds, scroll, priority, display IRQs) | ✅ done |
 | 4 | Sprites (OBJ — regular, 4/8bpp, flip, 1D/2D mapping, priority) | ✅ done |
+| 6 | DMA (4 channels) + timers (4, cascade) + interrupt wiring | ✅ done |
 | 5 | Affine BGs + sprites, bitmap modes 3–5, blending/windowing | — |
-| 6 | DMA, timers, interrupt scheduling | — |
 | 7 | APU | — |
 | 8 | Tauri shell + UI | — |
 
@@ -33,16 +33,19 @@ core/
 │   ├── memory.rs       # Bus trait + full memory map, timing, open bus
 │   ├── io.rs           # I/O register file (interrupt controller, WAITCNT, …)
 │   ├── ppu.rs          # PPU: text backgrounds + sprites + display timing/IRQs
+│   ├── dma.rs          # 4-channel DMA controller
+│   ├── timers.rs       # 4 hardware timers (prescaler + cascade)
 │   ├── timing.rs       # waitstate / S-N cycle model
 │   ├── bios.rs         # BIOS SWI handling (HLE routines + LLE fallback)
-│   ├── system.rs       # Gba: CPU + memory + PPU, run_frame loop
+│   ├── system.rs       # Gba: CPU + memory + PPU + DMA + timers, run_frame loop
 │   └── lib.rs
 ├── examples/
 │   └── render_scene.rs # headless PPU demo → 24-bit BMP
 └── tests/
     ├── cpu_test.rs     # hand-assembled instruction tests + headless ROM harness
     ├── bus_test.rs     # I/O, timing, BIOS HLE, open bus, interrupts/halt
-    └── ppu_test.rs     # PPU registers, display timing/IRQs, text rendering
+    ├── ppu_test.rs     # PPU registers, display timing/IRQs, text + sprite rendering
+    └── system_test.rs  # DMA channels, timers, and their interrupts
 ```
 
 ## Seeing the PPU work
@@ -149,3 +152,20 @@ via `Memory::load_bios`.
 - **VRAM 8-bit-write boundary** is now mode-aware: byte writes to OBJ tile VRAM
   are correctly ignored (they only duplicate in the BG area), with the BG/OBJ
   split at 0x10000 in tiled modes and 0x14000 in the bitmap modes.
+
+## Accuracy notes (Phase 6 trade-offs)
+
+- **DMA**: all four channels with immediate, VBlank and HBlank start timing,
+  increment/decrement/fixed/reload address modes, 16/32-bit units, repeat, and
+  the completion interrupt. Channels are serviced in priority order and each
+  transfer runs atomically between CPU instructions — accurate to the CPU's
+  view of memory, though DMA does not yet *steal* CPU cycles (deferred to a
+  cycle-accurate pass). Sound-FIFO / video-capture "special" timing is Phase 7.
+- **Timers**: all four with the four prescalers, cascade (count-up) mode, and
+  the overflow interrupt. Counters advance per `tick` (one CPU instruction) with
+  the prescaler remainder carried between ticks, so timing is accurate to a
+  few-cycle granularity; the exact sub-instruction phase of a timer IRQ is
+  refined only if needed.
+- **Interrupts** from the PPU, timers and DMA now all flow through the real
+  `IE`/`IF`/`IME` controller into the CPU — the machinery a real ROM's main
+  loop and `IntrWait` calls depend on.

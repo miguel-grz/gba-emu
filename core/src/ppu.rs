@@ -28,6 +28,15 @@ use crate::io::irq;
 
 pub const SCREEN_W: usize = 240;
 pub const SCREEN_H: usize = 160;
+
+/// Result of advancing the PPU: interrupts to raise, plus the display events
+/// that drive DMA (independent of the interrupt-enable bits).
+#[derive(Default)]
+pub struct PpuOutput {
+    pub irqs: u16,
+    pub vblank_start: bool,
+    pub hblank_start: bool,
+}
 const DOTS_PER_LINE: u32 = 1232;
 const HDRAW_DOTS: u32 = 960;
 const TOTAL_LINES: u16 = 228;
@@ -166,29 +175,31 @@ impl Ppu {
 
     // ---- timing ----
 
-    /// Advance the PPU by `cycles`, rendering visible scanlines and returning
-    /// the set of interrupt bits (VBlank/HBlank/VCount) to raise in `IF`.
+    /// Advance the PPU by `cycles`, rendering visible scanlines. Returns the
+    /// interrupt bits to raise plus the VBlank/HBlank *events* (which drive
+    /// DMA regardless of whether their interrupt is enabled).
     /// `vram`/`palette`/`oam` are borrowed from [`crate::memory::Memory`] for
     /// the duration of any rendering triggered here.
-    pub fn tick(&mut self, cycles: u64, vram: &[u8], palette: &[u8], oam: &[u8]) -> u16 {
-        let mut irqs = 0;
+    pub fn tick(&mut self, cycles: u64, vram: &[u8], palette: &[u8], oam: &[u8]) -> PpuOutput {
+        let mut out = PpuOutput::default();
         for _ in 0..cycles {
-            irqs |= self.tick_one(vram, palette, oam);
+            self.tick_one(vram, palette, oam, &mut out);
         }
-        irqs
+        out
     }
 
-    fn tick_one(&mut self, vram: &[u8], palette: &[u8], oam: &[u8]) -> u16 {
-        let mut irqs = 0;
+    fn tick_one(&mut self, vram: &[u8], palette: &[u8], oam: &[u8], out: &mut PpuOutput) {
         self.dot += 1;
 
         if self.dot == HDRAW_DOTS {
-            // Entering HBlank: the line is now fully "drawn".
+            // Entering HBlank: the line is now fully "drawn". HBlank DMA fires
+            // only for visible lines.
             if self.vcount < SCREEN_H as u16 {
                 self.render_scanline(self.vcount, vram, palette, oam);
+                out.hblank_start = true;
             }
             if self.dispstat() & 1 << 4 != 0 {
-                irqs |= irq::HBLANK;
+                out.irqs |= irq::HBLANK;
             }
         }
 
@@ -200,15 +211,15 @@ impl Ppu {
             }
             if self.vcount == SCREEN_H as u16 {
                 self.frame_ready = true;
+                out.vblank_start = true;
                 if self.dispstat() & 1 << 3 != 0 {
-                    irqs |= irq::VBLANK;
+                    out.irqs |= irq::VBLANK;
                 }
             }
             if self.vcount == self.dispstat() >> 8 && self.dispstat() & 1 << 5 != 0 {
-                irqs |= irq::VCOUNT;
+                out.irqs |= irq::VCOUNT;
             }
         }
-        irqs
     }
 
     // ---- rendering ----
