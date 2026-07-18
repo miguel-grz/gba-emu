@@ -389,6 +389,33 @@ fn wide_sprite_shape_and_size() {
     assert_eq!(line[32], 0);
 }
 
+// -------------------------------------------------------- bitmap modes
+
+#[test]
+fn bitmap_mode3_direct_color() {
+    let color = 0x3DEF;
+    let line = render_line0(|m| {
+        m.write16(VRAM + 10 * 2, color); // pixel (10, 0) at (0*240+10)*2
+        m.write16(DISPCNT, 3 | (1 << 10)); // mode 3, BG2 on
+    });
+    assert_eq!(line[10], color);
+}
+
+#[test]
+fn bitmap_mode4_paletted_with_transparency() {
+    let color = 0x03E0;
+    let backdrop = 0x001F;
+    let line = render_line0(|m| {
+        m.write16(PALETTE, backdrop); // index 0 = backdrop
+        m.write16(PALETTE + 5 * 2, color); // index 5
+        m.write16(VRAM, 0x0505); // pixels 0,1 = index 5 (byte writes duplicate)
+        m.write16(DISPCNT, 4 | (1 << 10)); // mode 4, BG2 on
+    });
+    assert_eq!(line[0], color);
+    assert_eq!(line[1], color);
+    assert_eq!(line[2], backdrop, "index 0 shows the backdrop");
+}
+
 // ------------------------------------------------------------ color helper
 
 #[test]

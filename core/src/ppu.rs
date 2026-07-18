@@ -10,11 +10,13 @@
 //! * 4bpp (16×16-color) and 8bpp (256-color) tiles, per-tile H/V flip,
 //!   per-background scroll, all four text map sizes, and priority compositing
 //!   over the backdrop.
+//! * Sprites (OBJ) — Phase 4; see [`Ppu::render_sprites_line`].
+//! * The bitmap modes 3–5 (BG2) — brought forward from Phase 5 to render real
+//!   homebrew ROMs; see [`Ppu::render_bitmap_line`].
 //!
-//! Deferred to later phases (and cleanly separable): sprites/OBJ (Phase 4),
-//! affine backgrounds, the bitmap modes 3–5, windows, mosaic, and alpha
-//! blending (Phase 5). The register storage for those already exists here so
-//! reads/writes behave; only their *rendering* is missing.
+//! Deferred to Phase 5 (and cleanly separable): affine backgrounds and sprites,
+//! windows, mosaic, and alpha blending. The register storage for those already
+//! exists here so reads/writes behave; only their *rendering* is missing.
 //!
 //! ### Timing
 //!
@@ -249,14 +251,18 @@ impl Ppu {
         let mut prio = [4u8; SCREEN_W];
 
         let mode = self.dispcnt() & 0x7;
-        // Composite front-to-back: enabled text BGs ordered by (priority, index).
-        let mut order: Vec<usize> = (0..4)
-            .filter(|&bg| self.dispcnt() & (1 << (8 + bg)) != 0 && Self::is_text_bg(mode, bg))
-            .collect();
-        order.sort_by_key(|&bg| (self.bgcnt(bg) & 0x3, bg));
-
-        for bg in order {
-            self.render_text_bg_line(bg, ly, vram, palette, &mut line, &mut prio);
+        if mode <= 2 {
+            // Composite front-to-back: enabled text BGs by (priority, index).
+            let mut order: Vec<usize> = (0..4)
+                .filter(|&bg| self.dispcnt() & (1 << (8 + bg)) != 0 && Self::is_text_bg(mode, bg))
+                .collect();
+            order.sort_by_key(|&bg| (self.bgcnt(bg) & 0x3, bg));
+            for bg in order {
+                self.render_text_bg_line(bg, ly, vram, palette, &mut line, &mut prio);
+            }
+        } else if self.dispcnt() & 1 << 10 != 0 {
+            // Bitmap modes 3–5 render on BG2 only.
+            self.render_bitmap_line(mode, ly, vram, palette, &mut line, &mut prio);
         }
 
         // Sprites (OBJ) are composited on top: an OBJ pixel wins when its
@@ -341,6 +347,58 @@ impl Ppu {
             };
             line[x] = read_u16(palette, pal_entry * 2);
             prio[x] = bg_prio;
+        }
+    }
+
+    /// Render the BG2 bitmap for one scanline (modes 3–5).
+    ///
+    /// * Mode 3 — 240×160 direct 15-bit color, fully opaque.
+    /// * Mode 4 — 240×160 8-bit paletted, double-buffered (DISPCNT bit 4
+    ///   selects the frame); palette index 0 is transparent.
+    /// * Mode 5 — 160×128 direct color, double-buffered; pixels outside the
+    ///   smaller canvas show the backdrop.
+    fn render_bitmap_line(
+        &self,
+        mode: u16,
+        ly: u16,
+        vram: &[u8],
+        palette: &[u8],
+        line: &mut [u16; SCREEN_W],
+        prio: &mut [u8; SCREEN_W],
+    ) {
+        let bg_prio = (self.bgcnt(2) & 0x3) as u8;
+        let frame = if self.dispcnt() & 1 << 4 != 0 {
+            0xA000
+        } else {
+            0
+        };
+        let ly = ly as usize;
+        match mode {
+            3 => {
+                for x in 0..SCREEN_W {
+                    line[x] = read_u16(vram, (ly * SCREEN_W + x) * 2);
+                    prio[x] = bg_prio;
+                }
+            }
+            4 => {
+                for x in 0..SCREEN_W {
+                    let idx = vram[frame + ly * SCREEN_W + x] as usize;
+                    if idx == 0 {
+                        continue; // transparent
+                    }
+                    line[x] = read_u16(palette, idx * 2);
+                    prio[x] = bg_prio;
+                }
+            }
+            _ => {
+                // Mode 5: 160×128 canvas.
+                if ly < 128 {
+                    for x in 0..160 {
+                        line[x] = read_u16(vram, frame + (ly * 160 + x) * 2);
+                        prio[x] = bg_prio;
+                    }
+                }
+            }
         }
     }
 

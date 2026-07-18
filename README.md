@@ -17,7 +17,7 @@ polished, modern UI.
 | 3 | PPU tiled modes 0–2 (text backgrounds, scroll, priority, display IRQs) | ✅ done |
 | 4 | Sprites (OBJ — regular, 4/8bpp, flip, 1D/2D mapping, priority) | ✅ done |
 | 6 | DMA (4 channels) + timers (4, cascade) + interrupt wiring | ✅ done |
-| 5 | Affine BGs + sprites, bitmap modes 3–5, blending/windowing | — |
+| 5 | Bitmap modes 3–5 ✅; affine BGs/sprites, blending, windowing (pending) | 🚧 partial |
 | 7 | APU | — |
 | 8 | Tauri shell + UI | — |
 
@@ -59,6 +59,15 @@ cargo run --example render_scene -- scene.bmp
 It exercises the renderer end to end — multiple tiles, palette, screen-map
 addressing, sub-tile detail, transparency over the backdrop, and a 16×16
 sprite (bordered, priority over the background) drawn from OAM.
+
+To run a real ROM and dump its first frame:
+
+```sh
+cargo run --example render_rom -- path/to/rom.gba out.bmp
+```
+
+The core boots public-domain homebrew (e.g. jsmolka's `hello.gba` renders
+"Hello world!" in mode 4) with no BIOS image required.
 
 ## Building and testing
 
