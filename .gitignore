@@ -1,0 +1,13 @@
+/target
+
+# macOS
+.DS_Store
+
+# Test ROMs are fetched locally, never committed
+core/tests/roms/
+*.gba
+*.sav
+
+# BIOS dumps must never be committed
+*.bin
+bios*.rom

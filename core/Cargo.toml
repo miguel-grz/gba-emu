@@ -1,0 +1,14 @@
+# Package is named `gba-core` (not `core`) because a crate literally named
+# `core` would collide with Rust's built-in core library in import paths.
+# The directory stays `core/` to match the planned workspace layout.
+[package]
+name = "gba-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Game Boy Advance emulator core (no UI dependencies)"
+
+[lib]
+name = "gba_core"
+
+[dependencies]
