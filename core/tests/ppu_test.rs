@@ -416,6 +416,87 @@ fn bitmap_mode4_paletted_with_transparency() {
     assert_eq!(line[2], backdrop, "index 0 shows the backdrop");
 }
 
+// -------------------------------------------------------- affine & mosaic
+
+const BG2CNT: u32 = 0x0400_000C;
+const BG2PA: u32 = 0x0400_0020;
+const BG2PD: u32 = 0x0400_0026;
+const BG2X: u32 = 0x0400_0028;
+const BG2Y: u32 = 0x0400_002C;
+const MOSAIC: u32 = 0x0400_004C;
+
+#[test]
+fn affine_bg_identity_transform() {
+    let color = 0x03E0;
+    let line = render_line0(|m| {
+        m.write16(PALETTE + 5 * 2, color); // 8bpp palette index 5
+                                           // Affine tile 1 (8bpp, 64 bytes) = index 5.
+        for i in 0..32 {
+            m.write16(VRAM + 64 + i * 2, 0x0505);
+        }
+        // Affine map at screen base block 1: entries are 1 byte each; make the
+        // first row point at tile 1.
+        for i in 0..8 {
+            m.write16(VRAM + 0x800 + i * 2, 0x0101);
+        }
+        // BG2CNT: screen base block 1, wrap on, size 0 (128px).
+        m.write16(BG2CNT, (1 << 8) | (1 << 13));
+        // Identity matrix (PA = PD = 1.0 in 8.8), reference point 0.
+        m.write16(BG2PA, 0x0100);
+        m.write16(BG2PD, 0x0100);
+        m.write32(BG2X, 0);
+        m.write32(BG2Y, 0);
+        m.write16(DISPCNT, 2 | (1 << 10)); // mode 2, BG2 on
+    });
+    assert!(
+        line.iter().all(|&px| px == color),
+        "identity affine fills the line"
+    );
+}
+
+#[test]
+fn affine_sprite_identity_matches_regular() {
+    let color = 0x7C00;
+    let line = render_line0(|m| {
+        m.write16(OBJ_PAL + 2, color); // OBJ index 1
+        obj_tile_4bpp(m, 1, 1);
+        // Affine param group 0 = identity (PA/PD = 1.0, PB/PC = 0).
+        m.write16(OAM + 0x06, 0x0100); // PA
+        m.write16(OAM + 0x1E, 0x0100); // PD
+                                       // Sprite 0: affine bit (attr0 bit 8), y = 0, square; x = 50, group 0.
+        set_sprite(m, 0, 1 << 8, 50, 1);
+        m.write16(DISPCNT, 1 << 12);
+    });
+    assert!(
+        line[50..58].iter().all(|&px| px == color),
+        "identity affine sprite"
+    );
+}
+
+#[test]
+fn bg_mosaic_blocks_pixels() {
+    // Tile pixel 0 = index 1 (A), pixel 1 = index 2 (B). With a horizontal
+    // mosaic size of 2, x=1 samples x=0, so it shows A instead of B.
+    let a = 0x0200;
+    let b = 0x0300;
+    let setup = |mosaic: bool| {
+        move |m: &mut Memory| {
+            m.write16(PALETTE + 2, a);
+            m.write16(PALETTE + 4, b);
+            fill_tile_4bpp(m, 0, 0, 1); // all index 1
+            m.write16(VRAM, 0x1121); // row 0: px0=1, px1=2, px2=1, px3=1
+            let cnt = (1 << 8) | if mosaic { 1 << 6 } else { 0 };
+            m.write16(BG0CNT, cnt);
+            m.write16(MOSAIC, 0x0001); // horizontal block size 2
+            m.write16(DISPCNT, 1 << 8);
+        }
+    };
+    // Without mosaic, x=1 shows B.
+    assert_eq!(render_line0(setup(false))[1], b);
+    // With mosaic, x=1 is pulled from x=0 and shows A.
+    assert_eq!(render_line0(setup(true))[1], a);
+}
+
 // ------------------------------------------------------------ color helper
 
 #[test]

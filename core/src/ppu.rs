@@ -5,18 +5,21 @@
 //! VBlank/HBlank/VCount interrupts. What that covers:
 //!
 //! * Mode 0 — four text backgrounds (BG0–BG3).
-//! * Mode 1 — two text backgrounds (BG0, BG1); BG2 is affine (Phase 5).
-//! * Mode 2 — both backgrounds are affine (Phase 5), so nothing tiled renders.
-//! * 4bpp (16×16-color) and 8bpp (256-color) tiles, per-tile H/V flip,
-//!   per-background scroll, all four text map sizes, and priority compositing
-//!   over the backdrop.
-//! * Sprites (OBJ) — Phase 4; see [`Ppu::render_sprites_line`].
-//! * The bitmap modes 3–5 (BG2) — brought forward from Phase 5 to render real
-//!   homebrew ROMs; see [`Ppu::render_bitmap_line`].
+//! * Mode 1 — two text backgrounds (BG0, BG1) plus affine BG2.
+//! * Mode 2 — affine BG2 and BG3.
+//! * 4bpp/8bpp tiles, per-tile H/V flip, per-background scroll, all four text
+//!   map sizes, and priority compositing over the backdrop.
+//! * Affine backgrounds (rotation/scaling, per-scanline reference updates,
+//!   wrap vs transparent); see [`Ppu::render_affine_bg_line`].
+//! * Sprites (OBJ), regular and affine incl. double-size; see
+//!   [`Ppu::render_sprites_line`].
+//! * BG and OBJ mosaic.
+//! * The bitmap modes 3–5 (BG2); see [`Ppu::render_bitmap_line`].
 //!
-//! Deferred to Phase 5 (and cleanly separable): affine backgrounds and sprites,
-//! windows, mosaic, and alpha blending. The register storage for those already
-//! exists here so reads/writes behave; only their *rendering* is missing.
+//! Deferred to Phase 5 part B (they need a compositing rework to track the top
+//! two layers per pixel): windows and alpha blending / brightness. The OBJ
+//! window mode is skipped for the same reason. The register storage exists so
+//! reads/writes behave; only those effects' rendering is missing.
 //!
 //! ### Timing
 //!
@@ -39,6 +42,12 @@ pub struct PpuOutput {
     pub vblank_start: bool,
     pub hblank_start: bool,
 }
+
+/// How a background layer is rendered in a given tiled mode.
+enum BgKind {
+    Text,
+    Affine,
+}
 const DOTS_PER_LINE: u32 = 1232;
 const HDRAW_DOTS: u32 = 960;
 const TOTAL_LINES: u16 = 228;
@@ -59,6 +68,11 @@ pub struct Ppu {
     framebuffer: Vec<u16>,
     /// Set when a full visible frame has been drawn (entering VBlank).
     frame_ready: bool,
+    /// Internal affine reference points for BG2 (`[0]`) and BG3 (`[1]`), in
+    /// 20.8 fixed point. Reloaded from BGxX/BGxY each frame and on write, and
+    /// advanced by (PB, PD) after every visible scanline.
+    ref_x: [i32; 2],
+    ref_y: [i32; 2],
 }
 
 impl Ppu {
@@ -69,6 +83,8 @@ impl Ppu {
             dot: 0,
             framebuffer: vec![0; SCREEN_W * SCREEN_H],
             frame_ready: false,
+            ref_x: [0; 2],
+            ref_y: [0; 2],
         }
     }
 
@@ -110,6 +126,54 @@ impl Ppu {
         self.regs[9 + bg * 2] & 0x1FF
     }
 
+    // Affine parameters for BG2 (`k`=0) and BG3 (`k`=1); PA–PD are signed 8.8.
+    fn bg_pa(&self, k: usize) -> i32 {
+        self.regs[0x10 + k * 8] as i16 as i32
+    }
+    fn bg_pb(&self, k: usize) -> i32 {
+        self.regs[0x11 + k * 8] as i16 as i32
+    }
+    fn bg_pc(&self, k: usize) -> i32 {
+        self.regs[0x12 + k * 8] as i16 as i32
+    }
+    fn bg_pd(&self, k: usize) -> i32 {
+        self.regs[0x13 + k * 8] as i16 as i32
+    }
+
+    /// Reload the internal affine reference point of BG (2+`k`) from its
+    /// BGxX/BGxY registers (28-bit signed, 20.8 fixed point).
+    fn reload_ref(&mut self, k: usize) {
+        let base = 0x14 + k * 8;
+        let x = u32::from(self.regs[base]) | u32::from(self.regs[base + 1]) << 16;
+        let y = u32::from(self.regs[base + 2]) | u32::from(self.regs[base + 3]) << 16;
+        self.ref_x[k] = sign_extend_28(x);
+        self.ref_y[k] = sign_extend_28(y);
+    }
+
+    fn mosaic(&self) -> u16 {
+        self.regs[0x26]
+    }
+
+    /// BG mosaic (horizontal, vertical) block sizes for `bg`, or (1, 1) when
+    /// that background's mosaic bit is clear.
+    fn bg_mosaic(&self, bg: usize) -> (usize, usize) {
+        if self.bgcnt(bg) & 1 << 6 != 0 {
+            let m = self.mosaic();
+            ((m & 0xF) as usize + 1, ((m >> 4) & 0xF) as usize + 1)
+        } else {
+            (1, 1)
+        }
+    }
+
+    /// OBJ mosaic (horizontal, vertical) block sizes.
+    fn obj_mosaic(&self) -> (usize, usize) {
+        let m = self.mosaic();
+        (
+            ((m >> 8) & 0xF) as usize + 1,
+            ((m >> 12) & 0xF) as usize + 1,
+        )
+    }
+
     /// Live DISPSTAT: the writable enable/setting bits OR the computed status
     /// bits (VBlank/HBlank/VCount-match), which are read-only.
     fn dispstat_read(&self) -> u16 {
@@ -126,16 +190,22 @@ impl Ppu {
         (self.dispstat() & 0xFF38) | status
     }
 
+    /// Index into `regs` for a byte offset (the block is 0x60 bytes, which is
+    /// not a power of two, so a bitmask would alias — index modulo instead).
+    fn reg_index(offset: u32) -> usize {
+        (offset >> 1) as usize % NUM_REGS
+    }
+
     pub fn read16(&self, offset: u32) -> u16 {
-        match offset & 0x3E {
+        match offset {
             0x04 => self.dispstat_read(),
             0x06 => self.vcount,
-            other => self.regs[(other >> 1) as usize],
+            _ => self.regs[Self::reg_index(offset)],
         }
     }
 
     pub fn write16(&mut self, offset: u32, value: u16) {
-        match offset & 0x3E {
+        match offset {
             // DISPSTAT: only the IRQ-enable bits (3–5) and VCount setting
             // (8–15) are writable; the status bits are hardware-driven.
             0x04 => {
@@ -143,7 +213,17 @@ impl Ppu {
                 self.regs[2] = (self.regs[2] & !mask) | (value & mask);
             }
             0x06 => {} // VCOUNT is read-only
-            other => self.regs[(other >> 1) as usize] = value,
+            // Writing a BGxX/BGxY halfword reloads that BG's internal
+            // affine reference point immediately.
+            0x28 | 0x2A | 0x2C | 0x2E => {
+                self.regs[Self::reg_index(offset)] = value;
+                self.reload_ref(0);
+            }
+            0x38 | 0x3A | 0x3C | 0x3E => {
+                self.regs[Self::reg_index(offset)] = value;
+                self.reload_ref(1);
+            }
+            _ => self.regs[Self::reg_index(offset)] = value,
         }
     }
 
@@ -199,6 +279,11 @@ impl Ppu {
             if self.vcount < SCREEN_H as u16 {
                 self.render_scanline(self.vcount, vram, palette, oam);
                 out.hblank_start = true;
+                // Advance the affine reference points by (PB, PD) per line.
+                for k in 0..2 {
+                    self.ref_x[k] += self.bg_pb(k);
+                    self.ref_y[k] += self.bg_pd(k);
+                }
             }
             if self.dispstat() & 1 << 4 != 0 {
                 out.irqs |= irq::HBLANK;
@@ -210,6 +295,9 @@ impl Ppu {
             self.vcount += 1;
             if self.vcount >= TOTAL_LINES {
                 self.vcount = 0;
+                // Reload the affine reference points at the start of the frame.
+                self.reload_ref(0);
+                self.reload_ref(1);
             }
             if self.vcount == SCREEN_H as u16 {
                 self.frame_ready = true;
@@ -226,12 +314,14 @@ impl Ppu {
 
     // ---- rendering ----
 
-    /// Whether background `bg` is a text (tiled) layer in the current mode.
-    fn is_text_bg(mode: u16, bg: usize) -> bool {
-        match mode {
-            0 => bg < 4,
-            1 => bg < 2, // BG0/BG1 text; BG2 affine (Phase 5)
-            _ => false,  // mode 2 affine; modes 3–5 bitmap (Phase 5)
+    /// How background `bg` behaves in the given tiled mode (0–2).
+    fn bg_kind(mode: u16, bg: usize) -> Option<BgKind> {
+        match (mode, bg) {
+            (0, 0..=3) => Some(BgKind::Text),
+            (1, 0 | 1) => Some(BgKind::Text),
+            (1, 2) => Some(BgKind::Affine),
+            (2, 2 | 3) => Some(BgKind::Affine),
+            _ => None,
         }
     }
 
@@ -252,13 +342,24 @@ impl Ppu {
 
         let mode = self.dispcnt() & 0x7;
         if mode <= 2 {
-            // Composite front-to-back: enabled text BGs by (priority, index).
+            // Composite front-to-back: enabled BGs by (priority, index). Each
+            // BG is a text or affine layer depending on the mode.
             let mut order: Vec<usize> = (0..4)
-                .filter(|&bg| self.dispcnt() & (1 << (8 + bg)) != 0 && Self::is_text_bg(mode, bg))
+                .filter(|&bg| {
+                    self.dispcnt() & (1 << (8 + bg)) != 0 && Self::bg_kind(mode, bg).is_some()
+                })
                 .collect();
             order.sort_by_key(|&bg| (self.bgcnt(bg) & 0x3, bg));
             for bg in order {
-                self.render_text_bg_line(bg, ly, vram, palette, &mut line, &mut prio);
+                match Self::bg_kind(mode, bg) {
+                    Some(BgKind::Text) => {
+                        self.render_text_bg_line(bg, ly, vram, palette, &mut line, &mut prio)
+                    }
+                    Some(BgKind::Affine) => {
+                        self.render_affine_bg_line(bg, vram, palette, &mut line, &mut prio)
+                    }
+                    None => {}
+                }
             }
         } else if self.dispcnt() & 1 << 10 != 0 {
             // Bitmap modes 3–5 render on BG2 only.
@@ -301,7 +402,9 @@ impl Ppu {
         let w_px = w_tiles * 8;
         let h_px = h_tiles * 8;
 
-        let bgy = (ly as usize + self.bgvofs(bg) as usize) % h_px;
+        let (mosaic_x, mosaic_y) = self.bg_mosaic(bg);
+        let mly = ly as usize - ly as usize % mosaic_y;
+        let bgy = (mly + self.bgvofs(bg) as usize) % h_px;
         let ty = bgy / 8;
         let py = bgy % 8;
 
@@ -311,7 +414,7 @@ impl Ppu {
             if prio[x] != 4 {
                 continue;
             }
-            let bgx = (x + self.bghofs(bg) as usize) % w_px;
+            let bgx = (x - x % mosaic_x + self.bghofs(bg) as usize) % w_px;
             let tx = bgx / 8;
 
             // Select the 32×32-tile screenblock, then the entry within it.
@@ -346,6 +449,55 @@ impl Ppu {
                 pal_bank * 16 + color_index
             };
             line[x] = read_u16(palette, pal_entry * 2);
+            prio[x] = bg_prio;
+        }
+    }
+
+    /// Render an affine background (BG2 or BG3) for the current scanline using
+    /// its internal reference point and the PA/PC horizontal step. Affine BGs
+    /// are always 8bpp with 1-byte map entries; BGxCNT bit 13 selects wrap vs
+    /// transparent outside the map.
+    fn render_affine_bg_line(
+        &self,
+        bg: usize,
+        vram: &[u8],
+        palette: &[u8],
+        line: &mut [u16; SCREEN_W],
+        prio: &mut [u8; SCREEN_W],
+    ) {
+        let k = bg - 2; // BG2 -> 0, BG3 -> 1
+        let cnt = self.bgcnt(bg);
+        let bg_prio = (cnt & 0x3) as u8;
+        let char_base = (((cnt >> 2) & 0x3) as usize) * 0x4000;
+        let screen_base = (((cnt >> 8) & 0x1F) as usize) * 0x800;
+        let wrap = cnt & 1 << 13 != 0;
+        // Sizes: 128, 256, 512, 1024 pixels square.
+        let size_px = 128i32 << ((cnt >> 14) & 0x3);
+        let tiles_wide = (size_px / 8) as usize;
+
+        let pa = self.bg_pa(k);
+        let pc = self.bg_pc(k);
+        let (mosaic_x, _) = self.bg_mosaic(bg);
+
+        for x in 0..SCREEN_W {
+            let sx = (x - x % mosaic_x) as i32;
+            // Texture coordinate in 20.8 fixed point, then to integer pixels.
+            let mut tx = (self.ref_x[k] + sx * pa) >> 8;
+            let mut ty = (self.ref_y[k] + sx * pc) >> 8;
+            if wrap {
+                tx = tx.rem_euclid(size_px);
+                ty = ty.rem_euclid(size_px);
+            } else if tx < 0 || tx >= size_px || ty < 0 || ty >= size_px {
+                continue; // outside the map, and not wrapping → transparent
+            }
+            let (tx, ty) = (tx as usize, ty as usize);
+
+            let tile = vram[screen_base + (ty / 8) * tiles_wide + tx / 8] as usize;
+            let color_index = vram[char_base + tile * 64 + (ty % 8) * 8 + (tx % 8)] as usize;
+            if color_index == 0 {
+                continue;
+            }
+            line[x] = read_u16(palette, color_index * 2);
             prio[x] = bg_prio;
         }
     }
@@ -406,8 +558,9 @@ impl Ppu {
     ///
     /// Sprites are processed in OAM order so that a lower-index sprite wins an
     /// overlap; each sprite's pixel replaces the background pixel only when its
-    /// priority is at least as high (`obj_prio <= bg_prio`). Regular sprites
-    /// only — affine (rotation/scaling) sprites are Phase 5.
+    /// priority is at least as high (`obj_prio <= bg_prio`). Regular and affine
+    /// (rotation/scaling, incl. double-size) sprites, with OBJ mosaic. The OBJ
+    /// window mode is Phase 5 part B.
     fn render_sprites_line(
         &self,
         ly: u16,
@@ -418,6 +571,7 @@ impl Ppu {
         bg_prio: &[u8; SCREEN_W],
     ) {
         let mapping_1d = self.dispcnt() & 1 << 6 != 0;
+        let (mos_x, mos_y) = self.obj_mosaic();
         // Tracks OBJ pixels already claimed by a lower-index sprite this line.
         let mut obj_written = [false; SCREEN_W];
 
@@ -427,76 +581,123 @@ impl Ppu {
             let attr2 = read_u16(oam, i * 8 + 4);
 
             let affine = attr0 & 1 << 8 != 0;
-            // Non-affine sprites use bit 9 as a disable flag.
+            // Bit 9 disables a regular sprite, or doubles an affine one.
             if !affine && attr0 & 1 << 9 != 0 {
                 continue;
             }
-            if affine {
-                continue; // rotation/scaling sprites: Phase 5
-            }
-            let obj_mode = (attr0 >> 10) & 0x3;
-            if obj_mode == 2 {
-                continue; // OBJ window: Phase 5
+            if (attr0 >> 10) & 0x3 == 2 {
+                continue; // OBJ window: Phase 5 part B
             }
 
             let shape = (attr0 >> 14) & 0x3;
             let size = (attr1 >> 14) & 0x3;
             let (w, h) = OBJ_SIZES[shape as usize][size as usize];
             let color8 = attr0 & 1 << 13 != 0;
-
-            // Vertical position wraps at 256; find this line's row in the sprite.
-            let y = (attr0 & 0xFF) as usize;
-            let sy = (ly as usize + 256 - y) % 256;
-            if sy >= h {
-                continue;
-            }
-
-            let x = (attr1 & 0x1FF) as usize;
-            let hflip = attr1 & 1 << 12 != 0;
-            let vflip = attr1 & 1 << 13 != 0;
+            let mosaic = attr0 & 1 << 12 != 0;
             let tile_base = (attr2 & 0x3FF) as usize;
             let obj_prio = ((attr2 >> 10) & 0x3) as u8;
             let pal_bank = ((attr2 >> 12) & 0xF) as usize;
 
-            let ty = if vflip { h - 1 - sy } else { sy };
-            let tiles_wide = w / 8;
+            // The on-screen bounding box; affine double-size doubles it.
+            let double = affine && attr0 & 1 << 9 != 0;
+            let (bw, bh) = if double { (w * 2, h * 2) } else { (w, h) };
 
-            for cx in 0..w {
+            // Row within the bounding box (vertical position wraps at 256).
+            let y = (attr0 & 0xFF) as usize;
+            let by = (ly as usize + 256 - y) % 256;
+            if by >= bh {
+                continue;
+            }
+            let x = (attr1 & 0x1FF) as usize;
+
+            // Per-column texture coordinate: an affine 2×2 transform about the
+            // box centre, or a straight (optionally flipped) mapping.
+            let (pa, pb, pc, pd) = if affine {
+                let g = ((attr1 >> 9) & 0x1F) as usize * 0x20;
+                (
+                    read_i16(oam, g + 0x06),
+                    read_i16(oam, g + 0x0E),
+                    read_i16(oam, g + 0x16),
+                    read_i16(oam, g + 0x1E),
+                )
+            } else {
+                (0, 0, 0, 0)
+            };
+            let hflip = !affine && attr1 & 1 << 12 != 0;
+            let vflip = !affine && attr1 & 1 << 13 != 0;
+
+            for cx in 0..bw {
                 let sx = (x + cx) & 0x1FF;
                 if sx >= SCREEN_W || obj_written[sx] {
                     continue;
                 }
-                let tx = if hflip { w - 1 - cx } else { cx };
-
-                // Tile index within OBJ character memory, honoring 1D vs 2D
-                // mapping and the double-slot stride of 8bpp tiles.
-                let step = if color8 { 2 } else { 1 };
-                let tile_index = if mapping_1d {
-                    tile_base + (ty / 8 * tiles_wide + tx / 8) * step
+                let (tx, ty) = if affine {
+                    let ix = cx as i32 - bw as i32 / 2;
+                    let iy = by as i32 - bh as i32 / 2;
+                    let tx = ((pa * ix + pb * iy) >> 8) + w as i32 / 2;
+                    let ty = ((pc * ix + pd * iy) >> 8) + h as i32 / 2;
+                    if tx < 0 || tx >= w as i32 || ty < 0 || ty >= h as i32 {
+                        continue; // outside the source sprite
+                    }
+                    (tx as usize, ty as usize)
                 } else {
-                    tile_base + ty / 8 * 32 + tx / 8 * step
-                };
-                let px = tx & 7;
-                let py = ty & 7;
-
-                let (color_index, pal_base) = if color8 {
-                    let off = tile_index * 32 + py * 8 + px;
-                    (vram[0x10000 + (off & 0x7FFF)] as usize, 0x200)
-                } else {
-                    let off = tile_index * 32 + py * 4 + px / 2;
-                    let byte = vram[0x10000 + (off & 0x7FFF)];
-                    let nibble = if px & 1 == 0 { byte & 0xF } else { byte >> 4 };
-                    (nibble as usize, 0x200 + pal_bank * 32)
+                    let tx = if hflip { w - 1 - cx } else { cx };
+                    let ty = if vflip { h - 1 - by } else { by };
+                    (tx, ty)
                 };
 
-                if color_index == 0 {
-                    continue; // transparent
-                }
-                obj_written[sx] = true;
-                if obj_prio <= bg_prio[sx] {
-                    line[sx] = read_u16(palette, pal_base + color_index * 2);
+                // Mosaic reduces effective resolution before sampling.
+                let (tx, ty) = if mosaic {
+                    (tx - tx % mos_x, ty - ty % mos_y)
+                } else {
+                    (tx, ty)
+                };
+
+                if let Some((ci, pal_base)) =
+                    Self::sample_obj(vram, tile_base, tx, ty, w, color8, pal_bank, mapping_1d)
+                {
+                    obj_written[sx] = true;
+                    if obj_prio <= bg_prio[sx] {
+                        line[sx] = read_u16(palette, pal_base + ci * 2);
+                    }
                 }
             }
+        }
+    }
+
+    /// Sample one texel of an OBJ tile; returns `(color_index, palette byte
+    /// base)` or `None` if transparent.
+    #[allow(clippy::too_many_arguments)]
+    fn sample_obj(
+        vram: &[u8],
+        tile_base: usize,
+        tx: usize,
+        ty: usize,
+        w: usize,
+        color8: bool,
+        pal_bank: usize,
+        mapping_1d: bool,
+    ) -> Option<(usize, usize)> {
+        let step = if color8 { 2 } else { 1 };
+        let tile_index = if mapping_1d {
+            tile_base + (ty / 8 * (w / 8) + tx / 8) * step
+        } else {
+            tile_base + ty / 8 * 32 + tx / 8 * step
+        };
+        let (px, py) = (tx & 7, ty & 7);
+        let (color_index, pal_base) = if color8 {
+            let off = tile_index * 32 + py * 8 + px;
+            (vram[0x10000 + (off & 0x7FFF)] as usize, 0x200)
+        } else {
+            let off = tile_index * 32 + py * 4 + px / 2;
+            let byte = vram[0x10000 + (off & 0x7FFF)];
+            let nibble = if px & 1 == 0 { byte & 0xF } else { byte >> 4 };
+            (nibble as usize, 0x200 + pal_bank * 32)
+        };
+        if color_index == 0 {
+            None
+        } else {
+            Some((color_index, pal_base))
         }
     }
 }
@@ -518,6 +719,16 @@ impl Default for Ppu {
 
 fn read_u16(data: &[u8], addr: usize) -> u16 {
     u16::from(data[addr]) | u16::from(data[addr + 1]) << 8
+}
+
+/// Read a signed 16-bit value (affine parameters) as i32.
+fn read_i16(data: &[u8], addr: usize) -> i32 {
+    read_u16(data, addr) as i16 as i32
+}
+
+/// Sign-extend a 28-bit value (affine reference registers) to i32.
+fn sign_extend_28(value: u32) -> i32 {
+    ((value << 4) as i32) >> 4
 }
 
 /// Convert a 15-bit BGR555 color to 8-bit-per-channel RGB (for the frontend

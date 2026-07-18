@@ -17,7 +17,7 @@ polished, modern UI.
 | 3 | PPU tiled modes 0–2 (text backgrounds, scroll, priority, display IRQs) | ✅ done |
 | 4 | Sprites (OBJ — regular, 4/8bpp, flip, 1D/2D mapping, priority) | ✅ done |
 | 6 | DMA (4 channels) + timers (4, cascade) + interrupt wiring | ✅ done |
-| 5 | Bitmap modes 3–5 ✅; affine BGs/sprites, blending, windowing (pending) | 🚧 partial |
+| 5 | Bitmap modes ✅, affine BGs/sprites ✅, mosaic ✅; blending + windows (pending) | 🚧 partial |
 | 7 | APU | — |
 | 8 | Tauri shell + UI | — |
 
@@ -127,6 +127,19 @@ via `Memory::load_bios`.
 - **8-bit-write quirks**: palette and BG-VRAM byte writes duplicate across the
   halfword; OAM ignores byte writes. The BG/OBJ VRAM boundary is fixed at
   `0x14000` for now and becomes mode-dependent with the Phase 3 PPU.
+
+## Accuracy notes (Phase 5 trade-offs)
+
+- **Done**: bitmap modes 3–5; affine backgrounds (BG2/BG3) with per-scanline
+  reference-point updates and wrap/transparent overflow; affine sprites
+  including double-size; BG and OBJ mosaic.
+- **Pending (part B)**: windows (WIN0/1/OBJ) and alpha blending / brightness
+  (BLDCNT/BLDALPHA/BLDY), plus the OBJ window and OBJ semi-transparency. These
+  need the compositing pipeline to track the top *two* layers per pixel and
+  per-pixel window masks, so they get their own focused pass. Their registers
+  already store/read back; only the effect is missing.
+- Affine sprite mosaic is applied in texture space (a close approximation of
+  hardware's screen-space mosaic).
 - **Still stubbed**: cartridge SRAM/Flash/EEPROM saves read as 0, and BIOS
   read-protection is not enforced. Neither affects CPU test ROMs.
 
