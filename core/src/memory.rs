@@ -198,6 +198,11 @@ impl Memory {
         self.apu.drain_samples()
     }
 
+    /// Set the pressed buttons (active-high, KEYINPUT bit order).
+    pub fn set_keys(&mut self, pressed: u16) {
+        self.io.set_keys(pressed);
+    }
+
     /// Run any DMA channels triggered this step. Channels are serviced in
     /// priority order (0 highest), each transferring atomically.
     fn run_dma(&mut self, vblank: bool, hblank: bool) {

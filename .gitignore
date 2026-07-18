@@ -1,5 +1,10 @@
 /target
 
+# Node / frontend build
+node_modules/
+dist/
+web/pkg/
+
 # macOS
 .DS_Store
 

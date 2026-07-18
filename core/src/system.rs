@@ -59,4 +59,10 @@ impl Gba {
     pub fn drain_samples(&mut self) -> Vec<i16> {
         self.mem.drain_samples()
     }
+
+    /// Set the pressed buttons (active-high, KEYINPUT bit order: A, B, Select,
+    /// Start, Right, Left, Up, Down, R, L).
+    pub fn set_keys(&mut self, pressed: u16) {
+        self.mem.set_keys(pressed);
+    }
 }

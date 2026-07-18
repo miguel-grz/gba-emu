@@ -39,6 +39,8 @@ pub struct Io {
     /// Set when software writes `HALTCNT` (or the Halt SWI runs under HLE).
     /// The CPU polls and clears this to enter its halted state.
     halt_request: bool,
+    /// KEYINPUT (0x130): active-low button state; 0x03FF = nothing pressed.
+    keyinput: u16,
     /// Generic backing store for not-yet-implemented registers, so
     /// read-after-write works. Indexed by (offset & 0x3FF) >> 1.
     scratch: [u16; 0x200],
@@ -53,8 +55,16 @@ impl Io {
             waitcnt: 0,
             postflg: 0,
             halt_request: false,
+            keyinput: 0x03FF,
             scratch: [0; 0x200],
         }
+    }
+
+    /// Set the keypad state. `pressed` is active-high (bit set = held) using
+    /// the KEYINPUT bit order (A, B, Select, Start, Right, Left, Up, Down,
+    /// R, L); it is stored active-low as the hardware register expects.
+    pub fn set_keys(&mut self, pressed: u16) {
+        self.keyinput = !pressed & 0x03FF;
     }
 
     pub fn waitcnt(&self) -> u16 {
@@ -90,8 +100,7 @@ impl Io {
 
     pub fn read16(&mut self, offset: u32) -> u16 {
         match offset & 0x3FE {
-            // KEYINPUT: active-low, 0x03FF = nothing pressed.
-            0x0130 => 0x03FF,
+            0x0130 => self.keyinput,
             0x0200 => self.ie,
             0x0202 => self.iff,
             0x0204 => self.waitcnt,
