@@ -1,52 +1,103 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { DEFAULT_KEYMAP, ensureWasm, GbaRunner } from "./lib/gba";
+import { DEFAULT_KEYMAP, ensureWasm, generateThumbnail, GbaRunner } from "./lib/gba";
 import { load, store } from "./lib/persist";
-import { Landing } from "./components/Landing";
+import {
+  addGame,
+  GameMeta,
+  getRom,
+  listGames,
+  removeGame,
+  setThumbnail,
+} from "./lib/library";
+import { Library } from "./components/Library";
 import { Console } from "./components/Console";
+
+interface Playing {
+  name: string;
+  rom: Uint8Array;
+}
 
 export function App() {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [rom, setRom] = useState<Uint8Array | null>(null);
-  const [fileName, setFileName] = useState("");
+  const [games, setGames] = useState<GameMeta[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [playing, setPlaying] = useState<Playing | null>(null);
   const [fps, setFps] = useState(0);
   const [flash, setFlash] = useState("");
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const runnerRef = useRef<GbaRunner | null>(null);
+
+  const refreshGames = useCallback(async () => {
+    try {
+      setGames(await listGames());
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
 
   useEffect(() => {
     ensureWasm().then(
       () => setReady(true),
       (e) => setError(String(e)),
     );
+    refreshGames();
+  }, [refreshGames]);
+
+  const addRom = useCallback(
+    async (file: File) => {
+      setError(null);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      setBusy(file.name);
+      try {
+        await addGame(file.name, bytes);
+        await refreshGames();
+        const thumb = await generateThumbnail(bytes);
+        await setThumbnail(file.name, thumb);
+        await refreshGames();
+      } catch (e) {
+        setError(String(e));
+      }
+      setBusy(null);
+    },
+    [refreshGames],
+  );
+
+  const playGame = useCallback(async (name: string) => {
+    const rom = await getRom(name);
+    if (!rom) {
+      setError("ROM not found");
+      return;
+    }
+    setPlaying({ name, rom });
   }, []);
 
-  const loadFile = useCallback(async (file: File) => {
-    setError(null);
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    setFileName(file.name);
-    setRom(bytes);
-  }, []);
+  const removeOne = useCallback(
+    async (name: string) => {
+      await removeGame(name);
+      await refreshGames();
+    },
+    [refreshGames],
+  );
 
   const eject = useCallback(() => {
-    setRom(null);
-    setFileName("");
+    setPlaying(null);
     setFps(0);
   }, []);
 
-  // Start the emulator once a ROM is loaded and the canvas is on screen.
+  // Drive the emulator whenever a game is being played.
   useEffect(() => {
-    if (!rom || !canvasRef.current) return;
+    if (!playing || !canvasRef.current) return;
     let runner: GbaRunner;
     try {
-      runner = new GbaRunner(rom, canvasRef.current);
+      runner = new GbaRunner(playing.rom, canvasRef.current);
     } catch (e) {
       setError(String(e));
-      setRom(null);
+      setPlaying(null);
       return;
     }
-    // Restore the battery save (in-game save file) for this cartridge.
-    const batteryKey = `pocket:battery:${fileName}`;
+
+    const batteryKey = `pocket:battery:${playing.name}`;
     const savedBattery = load(batteryKey);
     if (savedBattery) runner.loadBattery(savedBattery);
 
@@ -54,7 +105,6 @@ export function App() {
     runner.start();
     runnerRef.current = runner;
 
-    // Persist the battery save periodically so in-game saves survive reloads.
     const persistBattery = () => store(batteryKey, runner.batteryData());
     const batteryTimer = window.setInterval(persistBattery, 5000);
 
@@ -78,31 +128,29 @@ export function App() {
       runner.stop();
       runnerRef.current = null;
     };
-  }, [rom, fileName]);
+  }, [playing]);
 
   const showFlash = useCallback((msg: string) => {
     setFlash(msg);
     setTimeout(() => setFlash(""), 1400);
   }, []);
 
-  const slotKey = `pocket:save:${fileName}`;
-
   const saveState = useCallback(() => {
     const runner = runnerRef.current;
-    if (!runner) return;
+    if (!runner || !playing) return;
     try {
-      store(slotKey, runner.saveState());
+      store(`pocket:save:${playing.name}`, runner.saveState());
       showFlash("State saved");
     } catch (e) {
       showFlash("Save failed");
       console.error(e);
     }
-  }, [slotKey, showFlash]);
+  }, [playing, showFlash]);
 
   const loadState = useCallback(() => {
     const runner = runnerRef.current;
-    if (!runner) return;
-    const bytes = load(slotKey);
+    if (!runner || !playing) return;
+    const bytes = load(`pocket:save:${playing.name}`);
     if (!bytes) {
       showFlash("No saved state");
       return;
@@ -114,7 +162,7 @@ export function App() {
       showFlash("Load failed");
       console.error(e);
     }
-  }, [slotKey, showFlash]);
+  }, [playing, showFlash]);
 
   return (
     <div className="app">
@@ -126,10 +174,10 @@ export function App() {
         <span className="subtitle">a modern Game Boy Advance emulator</span>
       </header>
 
-      {rom ? (
+      {playing ? (
         <Console
           canvasRef={canvasRef}
-          fileName={fileName}
+          fileName={playing.name}
           fps={fps}
           flash={flash}
           onEject={eject}
@@ -137,7 +185,15 @@ export function App() {
           onLoad={loadState}
         />
       ) : (
-        <Landing ready={ready} error={error} onLoad={loadFile} />
+        <Library
+          ready={ready}
+          games={games}
+          busy={busy}
+          error={error}
+          onAdd={addRom}
+          onPlay={playGame}
+          onRemove={removeOne}
+        />
       )}
 
       <footer className="credits">

@@ -10,6 +10,34 @@ export function ensureWasm(): Promise<void> {
   return wasmReady;
 }
 
+/**
+ * Boot a ROM headlessly for a few seconds and capture a frame as a PNG data
+ * URL — a real thumbnail for the library. Yields periodically so it doesn't
+ * freeze the UI.
+ */
+export async function generateThumbnail(rom: Uint8Array, frames = 220): Promise<string> {
+  await ensureWasm();
+  const emu = new Emulator(rom);
+  try {
+    for (let i = 0; i < frames; i++) {
+      emu.run_frame();
+      if (i % 16 === 0) await new Promise((r) => setTimeout(r, 0));
+    }
+    const w = Emulator.width();
+    const h = Emulator.height();
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d")!;
+    const image = ctx.createImageData(w, h);
+    image.data.set(emu.frame());
+    ctx.putImageData(image, 0, 0);
+    return canvas.toDataURL("image/png");
+  } finally {
+    emu.free();
+  }
+}
+
 /** Button index in the GBA KEYINPUT register. */
 export const Button = {
   A: 0,
