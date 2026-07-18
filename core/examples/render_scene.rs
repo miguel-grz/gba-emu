@@ -13,7 +13,10 @@ use gba_core::Memory;
 use std::io::Write;
 
 const PALETTE: u32 = 0x0500_0000;
+const OBJ_PALETTE: u32 = 0x0500_0200;
 const VRAM: u32 = 0x0600_0000;
+const OBJ_TILES: u32 = 0x0601_0000;
+const OAM: u32 = 0x0700_0000;
 const SCREEN_BASE_BLOCK: u32 = 1;
 
 fn set_palette(m: &mut Memory, index: u32, color: u16) {
@@ -73,7 +76,54 @@ fn build_scene(m: &mut Memory) {
     }
 
     m.write16(0x0400_0008, (SCREEN_BASE_BLOCK << 8) as u16); // BG0CNT
-    m.write16(0x0400_0000, 1 << 8); // DISPCNT: mode 0, BG0 on
+
+    // A 16×16 sprite (4 tiles, 1D mapping) overlaid on the background.
+    m.write16(OBJ_PALETTE + 2, 0x03FF); // OBJ index 1 = yellow
+    m.write16(OBJ_PALETTE + 4, 0x0000); // OBJ index 2 = black (border)
+    for tile in 1..=4 {
+        obj_solid_tile(m, tile, 1);
+    }
+    // Draw a black frame around the 16×16 sprite by editing edge pixels.
+    frame_sprite(m);
+    // attr0: y = 60, square. attr1: x = 108, size 1 (16×16). attr2: tile 1.
+    m.write16(OAM, 60);
+    m.write16(OAM + 2, 108 | (1 << 14));
+    m.write16(OAM + 4, 1);
+
+    // DISPCNT: mode 0, BG0 on, OBJ on, 1D OBJ tile mapping.
+    m.write16(0x0400_0000, (1 << 8) | (1 << 12) | (1 << 6));
+}
+
+/// Solid 4bpp OBJ tile (all pixels = `idx`), written to OBJ character VRAM.
+fn obj_solid_tile(m: &mut Memory, tile: u32, idx: u8) {
+    let packed = u16::from(idx | idx << 4) * 0x0101;
+    for i in 0..16 {
+        m.write16(OBJ_TILES + tile * 32 + i * 2, packed);
+    }
+}
+
+/// Set one 4bpp pixel (x, y) of an OBJ tile to palette index `idx`.
+/// OBJ VRAM ignores byte writes, so this read-modify-writes the halfword.
+fn set_obj_pixel(m: &mut Memory, tile: u32, x: u32, y: u32, idx: u8) {
+    let half_addr = OBJ_TILES + tile * 32 + y * 4 + (x / 4) * 2;
+    let shift = (x & 3) * 4;
+    let cur = m.read16(half_addr);
+    let new = (cur & !(0xF << shift)) | (u16::from(idx) << shift);
+    m.write16(half_addr, new);
+}
+
+/// Outline the 16×16 sprite (tiles 1–4, 1D-mapped as a 2×2 block) with index 2.
+fn frame_sprite(m: &mut Memory) {
+    for i in 0..8 {
+        set_obj_pixel(m, 1, i, 0, 2); // top edge, left tile
+        set_obj_pixel(m, 2, i, 0, 2); // top edge, right tile
+        set_obj_pixel(m, 3, i, 7, 2); // bottom edge, left tile
+        set_obj_pixel(m, 4, i, 7, 2); // bottom edge, right tile
+        set_obj_pixel(m, 1, 0, i, 2); // left edge, top tile
+        set_obj_pixel(m, 3, 0, i, 2); // left edge, bottom tile
+        set_obj_pixel(m, 2, 7, i, 2); // right edge, top tile
+        set_obj_pixel(m, 4, 7, i, 2); // right edge, bottom tile
+    }
 }
 
 fn write_bmp(path: &str, fb: &[u16]) -> std::io::Result<()> {

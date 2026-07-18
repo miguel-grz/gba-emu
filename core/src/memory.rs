@@ -327,9 +327,14 @@ impl Memory {
                 if width == Width::Byte {
                     // VRAM 8-bit write duplicates across the halfword in the BG
                     // area and is ignored in the OBJ area. The BG/OBJ boundary
-                    // is mode-dependent (0x14000 in tiled modes); we use that
-                    // boundary now and refine it with the PPU in Phase 3.
-                    if idx < 0x14000 {
+                    // is mode-dependent: OBJ VRAM starts at 0x10000 in tiled
+                    // modes and 0x14000 in the bitmap modes (3–5).
+                    let obj_start = if self.ppu.bg_mode() >= 3 {
+                        0x14000
+                    } else {
+                        0x10000
+                    };
+                    if idx < obj_start {
                         let dup = u32::from(value as u8) * 0x0101;
                         Self::store_slice(&mut self.vram, VRAM_SIZE, idx & !1, Width::Half, dup);
                     }

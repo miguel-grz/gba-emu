@@ -75,6 +75,12 @@ impl Ppu {
         self.vcount
     }
 
+    /// Current BG mode (DISPCNT bits 0–2). Used by the memory bus to place the
+    /// mode-dependent BG/OBJ boundary for VRAM 8-bit writes.
+    pub fn bg_mode(&self) -> u16 {
+        self.dispcnt() & 0x7
+    }
+
     // ---- register access (0x000..0x060) ----
 
     fn dispcnt(&self) -> u16 {
@@ -172,14 +178,14 @@ impl Ppu {
         irqs
     }
 
-    fn tick_one(&mut self, vram: &[u8], palette: &[u8], _oam: &[u8]) -> u16 {
+    fn tick_one(&mut self, vram: &[u8], palette: &[u8], oam: &[u8]) -> u16 {
         let mut irqs = 0;
         self.dot += 1;
 
         if self.dot == HDRAW_DOTS {
             // Entering HBlank: the line is now fully "drawn".
             if self.vcount < SCREEN_H as u16 {
-                self.render_scanline(self.vcount, vram, palette);
+                self.render_scanline(self.vcount, vram, palette, oam);
             }
             if self.dispstat() & 1 << 4 != 0 {
                 irqs |= irq::HBLANK;
@@ -216,7 +222,7 @@ impl Ppu {
         }
     }
 
-    fn render_scanline(&mut self, ly: u16, vram: &[u8], palette: &[u8]) {
+    fn render_scanline(&mut self, ly: u16, vram: &[u8], palette: &[u8], oam: &[u8]) {
         let base = ly as usize * SCREEN_W;
 
         // Forced blank (DISPCNT bit 7) outputs white.
@@ -227,7 +233,9 @@ impl Ppu {
 
         let backdrop = read_u16(palette, 0);
         let mut line = [backdrop; SCREEN_W];
-        let mut written = [false; SCREEN_W];
+        // Per-pixel priority of the current winner. 4 = backdrop (behind all
+        // BG/OBJ priorities 0–3), so any layer claims an unclaimed pixel.
+        let mut prio = [4u8; SCREEN_W];
 
         let mode = self.dispcnt() & 0x7;
         // Composite front-to-back: enabled text BGs ordered by (priority, index).
@@ -237,7 +245,14 @@ impl Ppu {
         order.sort_by_key(|&bg| (self.bgcnt(bg) & 0x3, bg));
 
         for bg in order {
-            self.render_text_bg_line(bg, ly, vram, palette, &mut line, &mut written);
+            self.render_text_bg_line(bg, ly, vram, palette, &mut line, &mut prio);
+        }
+
+        // Sprites (OBJ) are composited on top: an OBJ pixel wins when its
+        // priority is at least as high as the BG pixel it covers (OBJs sit in
+        // front of same-priority backgrounds).
+        if self.dispcnt() & 1 << 12 != 0 {
+            self.render_sprites_line(ly, vram, palette, oam, &mut line, &prio);
         }
 
         self.framebuffer[base..base + SCREEN_W].copy_from_slice(&line);
@@ -252,9 +267,10 @@ impl Ppu {
         vram: &[u8],
         palette: &[u8],
         line: &mut [u16; SCREEN_W],
-        written: &mut [bool; SCREEN_W],
+        prio: &mut [u8; SCREEN_W],
     ) {
         let cnt = self.bgcnt(bg);
+        let bg_prio = (cnt & 0x3) as u8;
         let char_base = (((cnt >> 2) & 0x3) as usize) * 0x4000;
         let screen_base = (((cnt >> 8) & 0x1F) as usize) * 0x800;
         let color8 = cnt & 1 << 7 != 0;
@@ -273,7 +289,9 @@ impl Ppu {
         let py = bgy % 8;
 
         for x in 0..SCREEN_W {
-            if written[x] {
+            // A background painted earlier (higher priority, or lower index at
+            // equal priority) already owns this pixel.
+            if prio[x] != 4 {
                 continue;
             }
             let bgx = (x + self.bghofs(bg) as usize) % w_px;
@@ -311,10 +329,117 @@ impl Ppu {
                 pal_bank * 16 + color_index
             };
             line[x] = read_u16(palette, pal_entry * 2);
-            written[x] = true;
+            prio[x] = bg_prio;
+        }
+    }
+
+    /// Render the sprite (OBJ) layer for one scanline over the background.
+    ///
+    /// Sprites are processed in OAM order so that a lower-index sprite wins an
+    /// overlap; each sprite's pixel replaces the background pixel only when its
+    /// priority is at least as high (`obj_prio <= bg_prio`). Regular sprites
+    /// only — affine (rotation/scaling) sprites are Phase 5.
+    fn render_sprites_line(
+        &self,
+        ly: u16,
+        vram: &[u8],
+        palette: &[u8],
+        oam: &[u8],
+        line: &mut [u16; SCREEN_W],
+        bg_prio: &[u8; SCREEN_W],
+    ) {
+        let mapping_1d = self.dispcnt() & 1 << 6 != 0;
+        // Tracks OBJ pixels already claimed by a lower-index sprite this line.
+        let mut obj_written = [false; SCREEN_W];
+
+        for i in 0..128 {
+            let attr0 = read_u16(oam, i * 8);
+            let attr1 = read_u16(oam, i * 8 + 2);
+            let attr2 = read_u16(oam, i * 8 + 4);
+
+            let affine = attr0 & 1 << 8 != 0;
+            // Non-affine sprites use bit 9 as a disable flag.
+            if !affine && attr0 & 1 << 9 != 0 {
+                continue;
+            }
+            if affine {
+                continue; // rotation/scaling sprites: Phase 5
+            }
+            let obj_mode = (attr0 >> 10) & 0x3;
+            if obj_mode == 2 {
+                continue; // OBJ window: Phase 5
+            }
+
+            let shape = (attr0 >> 14) & 0x3;
+            let size = (attr1 >> 14) & 0x3;
+            let (w, h) = OBJ_SIZES[shape as usize][size as usize];
+            let color8 = attr0 & 1 << 13 != 0;
+
+            // Vertical position wraps at 256; find this line's row in the sprite.
+            let y = (attr0 & 0xFF) as usize;
+            let sy = (ly as usize + 256 - y) % 256;
+            if sy >= h {
+                continue;
+            }
+
+            let x = (attr1 & 0x1FF) as usize;
+            let hflip = attr1 & 1 << 12 != 0;
+            let vflip = attr1 & 1 << 13 != 0;
+            let tile_base = (attr2 & 0x3FF) as usize;
+            let obj_prio = ((attr2 >> 10) & 0x3) as u8;
+            let pal_bank = ((attr2 >> 12) & 0xF) as usize;
+
+            let ty = if vflip { h - 1 - sy } else { sy };
+            let tiles_wide = w / 8;
+
+            for cx in 0..w {
+                let sx = (x + cx) & 0x1FF;
+                if sx >= SCREEN_W || obj_written[sx] {
+                    continue;
+                }
+                let tx = if hflip { w - 1 - cx } else { cx };
+
+                // Tile index within OBJ character memory, honoring 1D vs 2D
+                // mapping and the double-slot stride of 8bpp tiles.
+                let step = if color8 { 2 } else { 1 };
+                let tile_index = if mapping_1d {
+                    tile_base + (ty / 8 * tiles_wide + tx / 8) * step
+                } else {
+                    tile_base + ty / 8 * 32 + tx / 8 * step
+                };
+                let px = tx & 7;
+                let py = ty & 7;
+
+                let (color_index, pal_base) = if color8 {
+                    let off = tile_index * 32 + py * 8 + px;
+                    (vram[0x10000 + (off & 0x7FFF)] as usize, 0x200)
+                } else {
+                    let off = tile_index * 32 + py * 4 + px / 2;
+                    let byte = vram[0x10000 + (off & 0x7FFF)];
+                    let nibble = if px & 1 == 0 { byte & 0xF } else { byte >> 4 };
+                    (nibble as usize, 0x200 + pal_bank * 32)
+                };
+
+                if color_index == 0 {
+                    continue; // transparent
+                }
+                obj_written[sx] = true;
+                if obj_prio <= bg_prio[sx] {
+                    line[sx] = read_u16(palette, pal_base + color_index * 2);
+                }
+            }
         }
     }
 }
+
+/// OBJ pixel dimensions indexed by `[shape][size]`. Shape 3 is prohibited on
+/// hardware; we map it to square so it never panics.
+const OBJ_SIZES: [[(usize, usize); 4]; 4] = [
+    [(8, 8), (16, 16), (32, 32), (64, 64)], // square
+    [(16, 8), (32, 8), (32, 16), (64, 32)], // horizontal
+    [(8, 16), (8, 32), (16, 32), (32, 64)], // vertical
+    [(8, 8), (16, 16), (32, 32), (64, 64)], // prohibited → square
+];
 
 impl Default for Ppu {
     fn default() -> Self {

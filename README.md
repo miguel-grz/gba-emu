@@ -15,8 +15,8 @@ polished, modern UI.
 | 1 | ARM7TDMI CPU (ARM + Thumb, banked registers, pipeline, exceptions) | ✅ done |
 | 2 | Memory/bus (I/O registers, waitstate timing, open bus, BIOS HLE + LLE) | ✅ done |
 | 3 | PPU tiled modes 0–2 (text backgrounds, scroll, priority, display IRQs) | ✅ done |
-| 4 | Sprites (OBJ) | — |
-| 5 | Affine + bitmap modes 3–5, blending/windowing | — |
+| 4 | Sprites (OBJ — regular, 4/8bpp, flip, 1D/2D mapping, priority) | ✅ done |
+| 5 | Affine BGs + sprites, bitmap modes 3–5, blending/windowing | — |
 | 6 | DMA, timers, interrupt scheduling | — |
 | 7 | APU | — |
 | 8 | Tauri shell + UI | — |
@@ -32,7 +32,7 @@ core/
 │   │   └── thumb.rs    # 16-bit Thumb instruction set
 │   ├── memory.rs       # Bus trait + full memory map, timing, open bus
 │   ├── io.rs           # I/O register file (interrupt controller, WAITCNT, …)
-│   ├── ppu.rs          # PPU: text background rendering + display timing/IRQs
+│   ├── ppu.rs          # PPU: text backgrounds + sprites + display timing/IRQs
 │   ├── timing.rs       # waitstate / S-N cycle model
 │   ├── bios.rs         # BIOS SWI handling (HLE routines + LLE fallback)
 │   ├── system.rs       # Gba: CPU + memory + PPU, run_frame loop
@@ -53,8 +53,9 @@ No game ROM needed — this renders a hand-built tiled scene to a BMP:
 cargo run --example render_scene -- scene.bmp
 ```
 
-It exercises the text renderer end to end (multiple tiles, palette, screen-map
-addressing, sub-tile detail, transparency over the backdrop).
+It exercises the renderer end to end — multiple tiles, palette, screen-map
+addressing, sub-tile detail, transparency over the backdrop, and a 16×16
+sprite (bordered, priority over the background) drawn from OAM.
 
 ## Building and testing
 
@@ -134,3 +135,17 @@ via `Memory::load_bios`.
   Sub-line dot timing is modeled only enough to place the HBlank flag; the
   precise HBlank IRQ *offset* within a line is refined when the Phase-6
   scheduler needs it.
+
+## Accuracy notes (Phase 4 trade-offs)
+
+- **Sprites**: regular (text) OBJs only — position with H/V wrap, all shapes and
+  sizes (8×8 to 64×64), 4bpp/8bpp, per-sprite H/V flip, 1D and 2D tile mapping,
+  and priority compositing against the backgrounds (an OBJ wins ties with a
+  same-priority BG; a lower OAM index wins sprite-vs-sprite overlap).
+- **Deferred to Phase 5** (they share the affine machinery with affine BGs):
+  rotation/scaling (affine) sprites, the OBJ window, and OBJ semi-transparent
+  blending. Affine sprites are skipped rather than drawn untransformed, so they
+  are simply absent until Phase 5; a semi-transparent OBJ renders opaque for now.
+- **VRAM 8-bit-write boundary** is now mode-aware: byte writes to OBJ tile VRAM
+  are correctly ignored (they only duplicate in the BG area), with the BG/OBJ
+  split at 0x10000 in tiled modes and 0x14000 in the bitmap modes.
