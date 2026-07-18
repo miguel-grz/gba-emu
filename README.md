@@ -1,213 +1,250 @@
-# gba-emu
+# Pocket — a Game Boy Advance emulator
 
-An open-source Game Boy Advance emulator with the eventual goal of a genuinely
-polished, modern UI.
+**Pocket** is an open-source Game Boy Advance emulator built around a
+cycle-aware ARM7TDMI core written in Rust, compiled to WebAssembly, and wrapped
+in a modern, deliberately-designed interface. It runs commercial games
+(Pokémon FireRed, Ruby, …) and public-domain homebrew alike, right in the
+browser today and as a native desktop app soon.
 
-- **Core**: Rust (`core/`, crate `gba-core`) — zero UI dependencies
-- **Frontend** (later phase): Tauri + React + TypeScript
-- **Audio** (later phase): `cpal`
-- **Hardware reference**: [GBATEK](https://problemkaputt.de/gbatek.htm)
+> Most GBA emulators are excellent at accuracy and stuck in 2008 at
+> presentation. Pocket's goal is to keep the accuracy and give the whole thing
+> a UI that feels like it was made this decade.
 
-## Status
+## Why another GBA emulator?
 
-| Phase | Component | Status |
-|-------|-----------|--------|
-| 1 | ARM7TDMI CPU (ARM + Thumb, banked registers, pipeline, exceptions) | ✅ done |
-| 2 | Memory/bus (I/O registers, waitstate timing, open bus, BIOS HLE + LLE) | ✅ done |
-| 3 | PPU tiled modes 0–2 (text backgrounds, scroll, priority, display IRQs) | ✅ done |
-| 4 | Sprites (OBJ — regular, 4/8bpp, flip, 1D/2D mapping, priority) | ✅ done |
-| 6 | DMA (4 channels) + timers (4, cascade) + interrupt wiring | ✅ done |
-| 5 | Bitmap modes, affine BGs/sprites, mosaic, windows, alpha blending | ✅ done |
-| 7 | APU — 4 PSG channels + Direct Sound (DMA-fed PCM FIFOs) | ✅ done |
-| 8 | Tauri shell + UI | — |
+The emulation scene is mature — mGBA and others are superb cores. What's missing
+is a player that treats your library like a modern app treats your content:
 
-## Layout
+- **A real library, not a file picker.** Your games live in a grid with cover
+  art and clean titles, stored locally in your browser, searchable and
+  organizable — not re-opened from disk every time.
+- **Automatic cover art & clean names.** Drop in `firered.gba` and it becomes
+  *Pokémon FireRed* with its box art. Covers are fetched at runtime from the
+  community [libretro thumbnail server](https://thumbnails.libretro.com) (the
+  same source RetroArch uses) — nothing copyrighted is bundled, and the source
+  is credited in-app. Anything it can't identify falls back to a real
+  screen capture of the game.
+- **Design as a feature.** A cohesive dark theme, save states, favorites, and
+  recently-played — the surface polish that dedicated emulators rarely invest
+  in.
+- **No BIOS hunting.** The BIOS is emulated at a high level, so most games boot
+  with nothing but the ROM.
+- **Genuinely open source.** MIT / Apache-2.0, hackable end to end, from the ARM
+  decoder to the CSS.
+
+## What works today
+
+- **Full CPU** — ARM7TDMI: complete ARM + Thumb instruction sets, banked
+  registers, pipeline, exceptions.
+- **Full graphics** — every PPU mode (tiled 0–2, bitmap 3–5), sprites (regular +
+  affine), windows, mosaic, and alpha/brighten/darken blending.
+- **Sound** — the four PSG channels plus Direct Sound (the PCM path most
+  commercial games use for music), mixed and resampled to your browser's audio.
+- **DMA, timers, interrupts** — the full machinery real game loops depend on.
+- **Cartridge saves** — SRAM and Flash (64K/128K), auto-detected and persisted
+  per cartridge, so in-game saves survive reloads.
+- **Save states** — snapshot and restore anywhere.
+- **Library UI** — IndexedDB-backed game storage, cover art, clean titles,
+  inline rename, favorites, recently-played, drag-and-drop import, search.
+
+## Using Pocket
+
+### In the browser (today)
+
+```sh
+npm install
+npm run wasm     # build the Rust core → WebAssembly (needs wasm-pack)
+npm run dev      # start the dev server, then open the printed localhost URL
+```
+
+Then just **drag a `.gba` file onto the window** (or use *Add ROM*). Your games
+and saves stay in your browser — nothing is uploaded anywhere.
+
+**Default controls**
+
+| Button | Key |
+|--------|-----|
+| D-Pad | Arrow keys |
+| A / B | X / Z |
+| L / R | A / S |
+| Start / Select | Enter / Backspace |
+
+*(Remappable controls and gamepad support are on the roadmap.)*
+
+### As a desktop app (coming soon)
+
+A [Tauri](https://tauri.app) shell will package Pocket as a small native app for
+macOS, Windows, and Linux. Once it lands, this section will cover downloading a
+release and opening ROMs directly — no terminal required.
+
+> **Bring your own ROMs.** Pocket ships no games. Use homebrew, or dumps of
+> cartridges you own.
+
+## Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Emulator core | **Rust** (`core/`, crate `gba-core`) — zero UI dependencies, 121 tests |
+| Core → web | **WebAssembly** via `wasm-bindgen` / `wasm-pack` (`web/`) |
+| Frontend | **React + TypeScript**, built with **Vite** |
+| Storage | **IndexedDB** (ROMs + library), `localStorage` (save states + battery) |
+| Audio | **Web Audio API** (resampled from the core's 32768 Hz stream) |
+| Desktop *(planned)* | **Tauri** |
+| Hardware reference | [GBATEK](https://problemkaputt.de/gbatek.htm) |
+
+## Project layout
 
 ```
-core/
+core/            # gba-core — the emulator, pure Rust, no UI
 ├── src/
-│   ├── cpu/
-│   │   ├── mod.rs      # register file, banking, CPSR/SPSR, pipeline, shifter
-│   │   ├── arm.rs      # 32-bit ARM instruction set
-│   │   └── thumb.rs    # 16-bit Thumb instruction set
-│   ├── memory.rs       # Bus trait + full memory map, timing, open bus
-│   ├── io.rs           # I/O register file (interrupt controller, WAITCNT, …)
-│   ├── ppu.rs          # PPU: text backgrounds + sprites + display timing/IRQs
-│   ├── dma.rs          # 4-channel DMA controller
-│   ├── timers.rs       # 4 hardware timers (prescaler + cascade)
-│   ├── apu.rs          # audio: 4 PSG channels + Direct Sound, mixing, samples
-│   ├── timing.rs       # waitstate / S-N cycle model
-│   ├── bios.rs         # BIOS SWI handling (HLE routines + LLE fallback)
-│   ├── system.rs       # Gba: CPU + memory + PPU + DMA + timers, run_frame loop
-│   └── lib.rs
-├── examples/
-│   └── render_scene.rs # headless PPU demo → 24-bit BMP
-└── tests/
-    ├── cpu_test.rs     # hand-assembled instruction tests + headless ROM harness
-    ├── bus_test.rs     # I/O, timing, BIOS HLE, open bus, interrupts/halt
-    ├── ppu_test.rs     # PPU registers, display timing/IRQs, text + sprite rendering
-    ├── system_test.rs  # DMA channels, timers, and their interrupts
-    └── apu_test.rs     # PSG channels, mixing, and the sample stream
+│   ├── cpu/     # ARM7TDMI: register file/banking, ARM + Thumb decoders
+│   ├── memory.rs, io.rs        # bus, full memory map, I/O registers, timing
+│   ├── ppu.rs                  # backgrounds, sprites, windows, blending
+│   ├── apu.rs, dma.rs, timers.rs
+│   ├── bios.rs, save.rs        # BIOS HLE (incl. decompression SWIs), SRAM/Flash
+│   └── system.rs               # ties it together, run_frame loop
+└── tests/       # 121 self-contained tests + headless ROM harness
+
+web/             # WebAssembly bindings (wasm-bindgen)
+src/             # React + TypeScript frontend
+├── components/  # Sidebar, Library, GameCard, Console, Settings, …
+└── lib/         # gba.ts (runner), library.ts (IndexedDB), gamedb.ts (titles/art)
 ```
 
-## Seeing the PPU work
+## Roadmap
 
-No game ROM needed — this renders a hand-built tiled scene to a BMP:
+| Status | Item |
+|:------:|------|
+| ✅ | ARM7TDMI CPU (ARM + Thumb, banking, pipeline, exceptions) |
+| ✅ | Memory/bus, I/O, waitstate timing, BIOS HLE + LLE |
+| ✅ | PPU — tiled + bitmap modes, sprites, affine, windows, mosaic, blending |
+| ✅ | DMA, timers, interrupts |
+| ✅ | APU — PSG channels + Direct Sound |
+| ✅ | Web frontend — library, covers, save states, saves, redesigned UI |
+| 🔜 | Configurable controls + gamepad support |
+| 🔜 | Tauri desktop shell |
+| 💡 | EEPROM saves, cartridge prefetch, cycle-accurate DMA stalls |
+
+**Pocket is under active development** — expect continuous improvements to
+accuracy, performance, and the interface. Issues and pull requests are welcome.
+
+## Building & testing the core
+
+The Rust core is fully testable on its own, no browser or ROM required:
 
 ```sh
-cargo run --example render_scene -- scene.bmp
+cargo test                                   # 121 tests
+cargo run --example render_scene -- scene.bmp   # render a tiled scene to a BMP
+cargo run --example render_rom -- rom.gba out.bmp   # dump a real ROM's first frame
 ```
 
-It exercises the renderer end to end — multiple tiles, palette, screen-map
-addressing, sub-tile detail, transparency over the backdrop, and a 16×16
-sprite (bordered, priority over the background) drawn from OAM.
+The suite covers ALU flags and barrel-shifter edge cases, pipeline-visible PC
+offsets, LDM/STM quirks, mode banking and interworking, the I/O registers and
+waitstate timing, BIOS HLE routines, PPU rendering and display IRQs, DMA and
+timers, and the audio sample stream.
 
-To run a real ROM and dump its first frame:
-
-```sh
-cargo run --example render_rom -- path/to/rom.gba out.bmp
-```
-
-The core boots public-domain homebrew (e.g. jsmolka's `hello.gba` renders
-"Hello world!" in mode 4) with no BIOS image required.
-
-## Building and testing
-
-```sh
-cargo test
-```
-
-The suite is self-contained (60+ tests). The CPU tests cover ALU flags,
-barrel-shifter edge cases, pipeline-visible PC offsets, misaligned load
-rotation, LDM/STM quirks, mode banking, exceptions and ARM↔Thumb interworking.
-The bus tests cover the I/O registers, waitstate timing, the BIOS HLE routines,
-cartridge open bus, the palette/VRAM/OAM 8-bit-write quirks, and interrupt/halt
-behavior.
-
-### Test ROMs (optional, recommended)
+### Optional test ROMs
 
 ROMs are not redistributed here. Drop these into `core/tests/roms/` and the
 harness picks them up automatically (tests skip with a notice otherwise):
 
 | File | Source | What it gives us |
 |------|--------|------------------|
-| `arm.gba`, `thumb.gba` | [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests) | Real pass/fail assertion: on failure the ROM parks with the failing test number in `r12` |
-| `armwrestler.gba` | ARMWrestler (mGBA fork: [mgba.io](https://mgba.io)) | Smoke test only until the PPU exists — results are rendered on screen |
+| `arm.gba`, `thumb.gba` | [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests) | Real pass/fail assertions — on failure the ROM parks with the failing test number in `r12` |
+| `hello.gba` | jsmolka | Boots and renders "Hello world!" in mode 4 — a quick end-to-end smoke test |
 
-No BIOS image is required (the core boots ROMs via `Cpu::skip_bios`, the
-post-BIOS state). ROMs that call BIOS SWI routines need a real BIOS loaded
-via `Memory::load_bios`.
+No BIOS image is required; the core boots ROMs from the post-BIOS state and
+emulates BIOS SWIs at a high level. Load a real BIOS via `Memory::load_bios` for
+low-level BIOS execution.
 
-## Accuracy notes (Phase 1 trade-offs)
+## License
+
+Dual-licensed under **MIT** or **Apache-2.0**, at your option.
+
+## Credits & references
+
+- [GBATEK](https://problemkaputt.de/gbatek.htm) — the definitive GBA hardware
+  reference.
+- [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests) — CPU test ROMs.
+- [libretro thumbnails](https://thumbnails.libretro.com) — community cover-art
+  server used for library art at runtime.
+
+---
+
+## Appendix — accuracy notes & trade-offs
+
+Deeper notes on what each subsystem models exactly and what it approximates, for
+the curious (and for future-me).
+
+### CPU
 
 - **Pipeline**: modeled as a two-slot fetch queue — every architecturally
-  visible effect is correct (PC reads +8/+4, stores of PC +12, flush on
-  branch, stale opcodes for self-modifying code).
-- **ARM7 quirks implemented**: misaligned LDR/LDRH rotation, LDRSH→LDRSB at
-  odd addresses, LDM/STM empty-list and base-in-list behavior, user-bank
-  transfers (S bit), `MOV pc`/`POP {pc}` non-interworking on ARMv4T.
-- **Deliberately unpredictable-as-benign**: MSR cannot flip the T bit,
-  invalid mode writes keep the old mode, ARMv5-only encodings (BLX, LDRD)
-  take the undefined trap or act as no-ops per hardware.
+  visible effect is correct (PC reads +8/+4, stores of PC +12, flush on branch,
+  stale opcodes for self-modifying code).
+- **ARM7 quirks implemented**: misaligned LDR/LDRH rotation, LDRSH→LDRSB at odd
+  addresses, LDM/STM empty-list and base-in-list behavior, user-bank transfers
+  (S bit), `MOV pc`/`POP {pc}` non-interworking on ARMv4T.
+- **Deliberately unpredictable-as-benign**: MSR cannot flip the T bit, invalid
+  mode writes keep the old mode, ARMv5-only encodings (BLX, LDRD) take the
+  undefined trap or act as no-ops per hardware.
 
-## Accuracy notes (Phase 2 trade-offs)
+### Memory / bus
 
-- **Cycle counts** are now driven by the bus: memory-access cycles come from
-  the [`timing`](core/src/timing.rs) waitstate model, and instruction handlers
-  add only internal (I-)cycles. Sequential vs non-sequential is inferred from
-  address adjacency. The cartridge **prefetch buffer** (WAITCNT bit 14) is not
-  modeled yet, so ROM-heavy code runs a few percent *slow* (a conservative
-  error); it lands with the Phase 6 scheduler where prefetch stalls interact
-  with DMA.
-- **BIOS**: HLE by default (no copyrighted image needed); load a real BIOS via
-  `Memory::load_bios` for LLE. HLE `Div`/`Sqrt`/`CpuSet`/`CpuFastSet`/
-  `RegisterRamReset` are exact; `ArcTan`/`ArcTan2` use the mathematically
-  correct result rather than the BIOS polynomial; `IntrWait`/`VBlankIntrWait`
-  halt until an interrupt (their per-source bookkeeping completes when
-  interrupt sources exist); decompression/affine-set/BitUnpack are not yet
-  implemented (use LLE if a game needs them).
+- **Cycle counts** are driven by the bus: memory-access cycles come from the
+  [`timing`](core/src/timing.rs) waitstate model; instruction handlers add only
+  internal (I-)cycles. The cartridge **prefetch buffer** is not modeled yet, so
+  ROM-heavy code runs a few percent *slow* (a conservative error).
+- **BIOS**: HLE by default (no copyrighted image needed). `Div`/`Sqrt`/`CpuSet`/
+  `CpuFastSet`/`RegisterRamReset` are exact; `ArcTan`/`ArcTan2` use the
+  mathematically correct result; `IntrWait`/`VBlankIntrWait` halt until an
+  interrupt; LZ77/RLE/Huffman/diff-unfilter/BitUnpack decompression SWIs are
+  implemented (needed by real games).
 - **8-bit-write quirks**: palette and BG-VRAM byte writes duplicate across the
-  halfword; OAM ignores byte writes. The BG/OBJ VRAM boundary is fixed at
-  `0x14000` for now and becomes mode-dependent with the Phase 3 PPU.
+  halfword; OAM ignores byte writes; the BG/OBJ VRAM boundary is mode-dependent.
 
-## Accuracy notes (Phase 5 trade-offs)
+### PPU
 
-- The PPU now covers the full tiled/bitmap feature set: bitmap modes 3–5;
-  affine BG2/BG3 with per-scanline reference-point updates and wrap/transparent
-  overflow; affine sprites including double-size; BG and OBJ mosaic; windows
-  (WIN0/WIN1/OBJ window); and the color special effects — alpha blending,
-  brighten, darken, and OBJ semi-transparency.
+- Covers the full tiled/bitmap feature set: bitmap modes 3–5; affine BG2/BG3
+  with per-scanline reference-point updates and wrap/transparent overflow;
+  affine sprites including double-size; BG and OBJ mosaic; windows (WIN0/WIN1/OBJ
+  window); and the color special effects — alpha blending, brighten, darken, and
+  OBJ semi-transparency.
 - **Compositing** renders each layer into its own scanline buffer, then per
   pixel picks the front-most and second layers (after window masking) and
-  applies the blend. This is clearer than an in-place painter and is what makes
-  two-target blending possible; the cost is five full-width buffers per line,
-  which a later optimization pass can trim if needed.
+  applies the blend — the approach that makes two-target blending clean, at the
+  cost of five full-width buffers per line.
+- **Display timing** is exact at line granularity (1232 cycles/line, 228 lines,
+  VBlank at 160); VBlank/HBlank/VCount IRQs fire through the real interrupt
+  controller. Sub-line dot timing is modeled only enough to place the HBlank flag.
 - Affine-sprite mosaic is applied in texture space (a close approximation of
   hardware's screen-space mosaic).
 
-## Accuracy notes (Phase 7 trade-offs)
+### APU
 
 - The four PSG channels — two square (channel 1 with frequency sweep), the wave
   channel, and the noise LFSR — each with volume envelope and length counter,
   clocked by a 512 Hz frame sequencer.
-- **Direct Sound** A/B: two 8-bit PCM FIFOs (32 bytes) each clocked by a timer
-  overflow (SOUNDCNT_H selects the timer), popping one sample per overflow and
-  refilled by DMA1/DMA2 on the "special" start-timing when half-empty — the
-  path left open in Phase 6. This is what most commercial games use for music.
-- Everything mixes to stereo (SOUNDCNT_L/H, master enable) and resamples to
-  32768 Hz into a buffer drained via `Gba::drain_samples`, ready for the
-  Phase 8 frontend to feed `cpal`.
-- Mixing levels are a reasonable approximation, not calibrated against
-  hardware's exact DAC/SOUNDBIAS response — there is no audio output to
-  calibrate against until the frontend exists.
-- **Still stubbed**: cartridge SRAM/Flash/EEPROM saves read as 0, and BIOS
-  read-protection is not enforced. Neither affects CPU test ROMs.
+- **Direct Sound** A/B: two 8-bit PCM FIFOs clocked by a timer overflow
+  (SOUNDCNT_H selects the timer), refilled by DMA1/DMA2 on the "special"
+  start-timing when half-empty — what most commercial games use for music.
+- Everything mixes to stereo and resamples to 32768 Hz. Mixing levels are a
+  reasonable approximation, not calibrated against hardware's exact DAC/SOUNDBIAS
+  response.
 
-## Accuracy notes (Phase 3 trade-offs)
+### DMA / timers / interrupts
 
-- **Scope**: text (tiled) backgrounds of modes 0–2 only. Mode 1's affine BG2
-  and mode 2's affine backgrounds render nothing yet; sprites, the bitmap
-  modes 3–5, windows, mosaic and blending are Phases 4–5. The register storage
-  for all of them already exists, so reads/writes behave — only rendering is
-  absent.
-- **Renderer**: scanline-based — each visible line is drawn at the start of its
-  HBlank, so mid-frame register changes take effect on later lines as on
-  hardware. Compositing is priority-then-BG-index over the backdrop; index 0 of
-  a (sub-)palette is transparent.
-- **Display timing** is exact at line granularity (1232 cycles/line, 228 lines,
-  VBlank at 160). VBlank/HBlank/VCount interrupts fire through the real
-  interrupt controller, which is what activates the Phase-2 `IntrWait` SWIs.
-  Sub-line dot timing is modeled only enough to place the HBlank flag; the
-  precise HBlank IRQ *offset* within a line is refined when the Phase-6
-  scheduler needs it.
+- **DMA**: all four channels with immediate/VBlank/HBlank/special start timing,
+  every address mode, 16/32-bit units, repeat, and completion IRQ. Transfers run
+  atomically between CPU instructions; DMA does not yet *steal* CPU cycles
+  (deferred to a cycle-accurate pass).
+- **Timers**: all four with the four prescalers, cascade (count-up) mode, and the
+  overflow interrupt, accurate to a few-cycle granularity.
+- **Interrupts** from the PPU, timers, and DMA all flow through the real
+  `IE`/`IF`/`IME` controller into the CPU.
 
-## Accuracy notes (Phase 4 trade-offs)
+### Saves
 
-- **Sprites**: regular (text) OBJs only — position with H/V wrap, all shapes and
-  sizes (8×8 to 64×64), 4bpp/8bpp, per-sprite H/V flip, 1D and 2D tile mapping,
-  and priority compositing against the backgrounds (an OBJ wins ties with a
-  same-priority BG; a lower OAM index wins sprite-vs-sprite overlap).
-- **Deferred to Phase 5** (they share the affine machinery with affine BGs):
-  rotation/scaling (affine) sprites, the OBJ window, and OBJ semi-transparent
-  blending. Affine sprites are skipped rather than drawn untransformed, so they
-  are simply absent until Phase 5; a semi-transparent OBJ renders opaque for now.
-- **VRAM 8-bit-write boundary** is now mode-aware: byte writes to OBJ tile VRAM
-  are correctly ignored (they only duplicate in the BG area), with the BG/OBJ
-  split at 0x10000 in tiled modes and 0x14000 in the bitmap modes.
-
-## Accuracy notes (Phase 6 trade-offs)
-
-- **DMA**: all four channels with immediate, VBlank and HBlank start timing,
-  increment/decrement/fixed/reload address modes, 16/32-bit units, repeat, and
-  the completion interrupt. Channels are serviced in priority order and each
-  transfer runs atomically between CPU instructions — accurate to the CPU's
-  view of memory, though DMA does not yet *steal* CPU cycles (deferred to a
-  cycle-accurate pass). Sound-FIFO / video-capture "special" timing is Phase 7.
-- **Timers**: all four with the four prescalers, cascade (count-up) mode, and
-  the overflow interrupt. Counters advance per `tick` (one CPU instruction) with
-  the prescaler remainder carried between ticks, so timing is accurate to a
-  few-cycle granularity; the exact sub-instruction phase of a timer IRQ is
-  refined only if needed.
-- **Interrupts** from the PPU, timers and DMA now all flow through the real
-  `IE`/`IF`/`IME` controller into the CPU — the machinery a real ROM's main
-  loop and `IntrWait` calls depend on.
+- **SRAM** (32K) and **Flash** (64K Panasonic / 128K Sanyo, with the full command
+  protocol, chip ID, sector erase, and bank switching) are auto-detected from the
+  ROM's save-type marker and persisted per cartridge. **EEPROM** is not yet
+  implemented.
