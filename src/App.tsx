@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_KEYMAP, ensureWasm, generateThumbnail, GbaRunner } from "./lib/gba";
 import { load, store } from "./lib/persist";
+import { coverUrl, resolveTitle } from "./lib/gamedb";
 import {
   addGame,
   GameMeta,
@@ -8,6 +9,8 @@ import {
   listGames,
   markPlayed,
   removeGame,
+  renameGame,
+  setDetails,
   setThumbnail,
   toggleFavorite,
 } from "./lib/library";
@@ -56,7 +59,10 @@ export function App() {
       const bytes = new Uint8Array(await file.arrayBuffer());
       setBusy(file.name);
       try {
-        await addGame(file.name, bytes);
+        await addGame(file.name, bytes, {
+          title: resolveTitle(bytes, file.name),
+          cover: coverUrl(bytes),
+        });
         await refreshGames();
         const thumb = await generateThumbnail(bytes);
         await setThumbnail(file.name, thumb);
@@ -68,6 +74,29 @@ export function App() {
     },
     [refreshGames],
   );
+
+  const renameOne = useCallback(
+    async (name: string, title: string) => {
+      await renameGame(name, title);
+      await refreshGames();
+    },
+    [refreshGames],
+  );
+
+  // Backfill titles/covers for games imported before the game database existed.
+  useEffect(() => {
+    if (!ready) return;
+    (async () => {
+      const stale = games.filter((g) => g.title === undefined);
+      if (stale.length === 0) return;
+      for (const g of stale) {
+        const rom = await getRom(g.name);
+        if (!rom) continue;
+        await setDetails(g.name, { title: resolveTitle(rom, g.name), cover: coverUrl(rom) });
+      }
+      refreshGames();
+    })();
+  }, [ready, games, refreshGames]);
 
   const playGame = useCallback(
     async (name: string) => {
@@ -116,7 +145,11 @@ export function App() {
     else if (section === "recents")
       list = list.filter((g) => g.lastPlayed).sort((a, b) => (b.lastPlayed ?? 0) - (a.lastPlayed ?? 0));
     const q = search.trim().toLowerCase();
-    if (q) list = list.filter((g) => g.name.toLowerCase().includes(q));
+    if (q)
+      list = list.filter(
+        (g) =>
+          g.name.toLowerCase().includes(q) || (g.title ?? "").toLowerCase().includes(q),
+      );
     return list;
   }, [games, section, search]);
 
@@ -234,6 +267,7 @@ export function App() {
             onPlay={playGame}
             onToggleFav={toggleFav}
             onRemove={removeOne}
+            onRename={renameOne}
           />
         )}
       </main>

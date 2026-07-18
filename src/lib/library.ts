@@ -8,10 +8,12 @@ const META = "meta";
 const ROMS = "roms";
 
 export interface GameMeta {
-  name: string;
+  name: string; // storage key (the file name)
+  title?: string; // display title (from the game database or a rename)
+  cover?: string; // cover-art URL (libretro), if the game is known
   size: number;
   addedAt: number;
-  thumbnail?: string; // PNG data URL
+  thumbnail?: string; // PNG data URL of a real screen capture
   favorite?: boolean;
   lastPlayed?: number;
 }
@@ -43,9 +45,13 @@ export async function listGames(): Promise<GameMeta[]> {
   return all.sort((a, b) => b.addedAt - a.addedAt);
 }
 
-export async function addGame(name: string, rom: Uint8Array): Promise<GameMeta> {
+export async function addGame(
+  name: string,
+  rom: Uint8Array,
+  extra: Partial<GameMeta> = {},
+): Promise<GameMeta> {
   const db = await openDb();
-  const meta: GameMeta = { name, size: rom.byteLength, addedAt: Date.now() };
+  const meta: GameMeta = { name, size: rom.byteLength, addedAt: Date.now(), ...extra };
   const tx = db.transaction([META, ROMS], "readwrite");
   tx.objectStore(META).put(meta);
   tx.objectStore(ROMS).put(rom, name);
@@ -66,6 +72,14 @@ export function setThumbnail(name: string, thumbnail: string): Promise<void> {
 
 export function toggleFavorite(name: string, favorite: boolean): Promise<void> {
   return updateMeta(name, { favorite });
+}
+
+export function renameGame(name: string, title: string): Promise<void> {
+  return updateMeta(name, { title: title.trim() });
+}
+
+export function setDetails(name: string, details: Partial<GameMeta>): Promise<void> {
+  return updateMeta(name, details);
 }
 
 export function markPlayed(name: string): Promise<void> {

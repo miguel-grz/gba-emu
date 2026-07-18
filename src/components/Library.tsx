@@ -17,6 +17,7 @@ interface Props {
   onPlay: (name: string) => void;
   onToggleFav: (name: string, favorite: boolean) => void;
   onRemove: (name: string) => void;
+  onRename: (name: string, title: string) => void;
 }
 
 const HERO: Record<Exclude<Section, "settings">, { title: string; sub: string }> = {
@@ -118,6 +119,7 @@ export function Library(props: Props) {
               onPlay={props.onPlay}
               onToggleFav={props.onToggleFav}
               onRemove={props.onRemove}
+              onRename={props.onRename}
             />
           ))}
         </div>

@@ -41,6 +41,17 @@ export function Settings() {
           <span>BIOS</span>
           <span>High-level (none required)</span>
         </div>
+        <div className="row">
+          <span>Cover art</span>
+          <a
+            className="link"
+            href="https://thumbnails.libretro.com"
+            target="_blank"
+            rel="noreferrer"
+          >
+            thumbnails.libretro.com
+          </a>
+        </div>
       </div>
     </section>
   );
