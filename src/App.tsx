@@ -16,6 +16,7 @@ import {
 } from "./lib/library";
 import { Controls, loadControls, saveControls } from "./lib/controls";
 import { InputManager } from "./lib/input";
+import { initDesktop } from "./lib/desktop";
 import { Sidebar, Section } from "./components/Sidebar";
 import { Library } from "./components/Library";
 import { Console } from "./components/Console";
@@ -62,19 +63,18 @@ export function App() {
     refreshGames();
   }, [refreshGames]);
 
-  const addRom = useCallback(
-    async (file: File) => {
+  const importRom = useCallback(
+    async (name: string, bytes: Uint8Array) => {
       setError(null);
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      setBusy(file.name);
+      setBusy(name);
       try {
-        await addGame(file.name, bytes, {
-          title: resolveTitle(bytes, file.name),
+        await addGame(name, bytes, {
+          title: resolveTitle(bytes, name),
           cover: coverUrl(bytes),
         });
         await refreshGames();
         const thumb = await generateThumbnail(bytes);
-        await setThumbnail(file.name, thumb);
+        await setThumbnail(name, thumb);
         await refreshGames();
       } catch (e) {
         setError(String(e));
@@ -83,6 +83,27 @@ export function App() {
     },
     [refreshGames],
   );
+
+  const addRom = useCallback(
+    async (file: File) => {
+      importRom(file.name, new Uint8Array(await file.arrayBuffer()));
+    },
+    [importRom],
+  );
+
+  // Native desktop menu (File > Open ROM). No-op on the web.
+  useEffect(() => {
+    let active = true;
+    let cleanup = () => {};
+    initDesktop(importRom).then((fn) => {
+      if (active) cleanup = fn;
+      else fn();
+    });
+    return () => {
+      active = false;
+      cleanup();
+    };
+  }, [importRom]);
 
   const renameOne = useCallback(
     async (name: string, title: string) => {

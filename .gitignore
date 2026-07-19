@@ -12,6 +12,8 @@ web/pkg/
 *.bmp
 *.ppm
 *.png
+# ...except the Tauri app icons, which must be committed for bundling.
+!src-tauri/icons/*.png
 
 # Test ROMs are fetched locally, never committed
 core/tests/roms/
