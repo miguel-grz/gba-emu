@@ -1,298 +1,200 @@
-# Pocket — a Game Boy Advance emulator
+# Pocket
 
-**Pocket** is an open-source Game Boy Advance emulator built around a
-cycle-aware ARM7TDMI core written in Rust, compiled to WebAssembly, and wrapped
-in a modern, deliberately-designed interface. It runs commercial games
-(Pokémon FireRed, Ruby, …) and public-domain homebrew alike — right in the
-browser, and as a native desktop app for macOS, Windows, and Linux.
+**A modern Game Boy Advance emulator — for your whole retro library, not just a file.**
 
-> Most GBA emulators are excellent at accuracy and stuck in 2008 at
-> presentation. Pocket's goal is to keep the accuracy and give the whole thing
-> a UI that feels like it was made this decade.
+Pocket plays your Game Boy Advance games with a clean, modern interface: a real
+library with cover art, save states, remappable controls, and a native desktop
+app for macOS, Windows, and Linux. Under the hood it's a from-scratch ARM7TDMI
+emulator written in Rust; on the surface it's an app that actually looks like it
+was made this decade.
 
-## Why another GBA emulator?
+> The emulation scene is full of accurate cores stuck behind interfaces from
+> 2008. Pocket keeps the accuracy and gives it a home worth opening.
 
-The emulation scene is mature — mGBA and others are superb cores. What's missing
-is a player that treats your library like a modern app treats your content:
+## Download
 
-- **A real library, not a file picker.** Your games live in a grid with cover
-  art and clean titles, stored locally in your browser, searchable and
-  organizable — not re-opened from disk every time.
+Grab the installer for your platform from the **[Releases page](../../releases)**:
+
+| Platform | File |
+|----------|------|
+| macOS (Intel + Apple Silicon) | `.dmg` |
+| Windows | `.msi` or `.exe` |
+| Linux | `.AppImage`, `.deb`, or `.rpm` |
+
+Prefer the browser? Pocket also runs entirely in a web page — no install. See
+[Run it yourself](#run-it-yourself).
+
+> **Bring your own ROMs.** Pocket ships no games. Use public-domain homebrew, or
+> dumps of cartridges you own. Your games and saves stay on your device —
+> nothing is uploaded anywhere.
+
+## Screenshots
+
+| Library | In-game | Controls |
+|:---:|:---:|:---:|
+| ![The Pocket library with cover art](docs/screenshots/library.png) | ![A game running in Pocket](docs/screenshots/gameplay.png) | ![Remappable controls in Settings](docs/screenshots/controls.png) |
+
+*(Images live in [`docs/screenshots/`](docs/screenshots/) — see that folder for
+what to capture.)*
+
+## What makes it different
+
+Most emulators nail accuracy and stop at a file-open dialog. Pocket treats your
+collection like a modern app treats your content:
+
+- **A real library, not a file picker.** Your games live in a grid — searchable,
+  favoritable, with recently-played — stored locally, not re-opened from disk
+  every time.
 - **Automatic cover art & clean names.** Drop in `firered.gba` and it becomes
-  *Pokémon FireRed* with its box art. Covers are fetched at runtime from the
-  community [libretro thumbnail server](https://thumbnails.libretro.com) (the
-  same source RetroArch uses) — nothing copyrighted is bundled, and the source
-  is credited in-app. Anything it can't identify falls back to a real
-  screen capture of the game.
-- **Design as a feature.** A cohesive dark theme, save states, favorites, and
-  recently-played — the surface polish that dedicated emulators rarely invest
-  in.
-- **No BIOS hunting.** The BIOS is emulated at a high level, so most games boot
-  with nothing but the ROM.
+  *Pokémon FireRed* with its box art. Covers load at runtime from the community
+  [libretro thumbnail server](https://thumbnails.libretro.com) (nothing
+  copyrighted is bundled), falling back to a real screen capture of the game.
+- **Play your way.** Keyboard and gamepad, both fully remappable with a live
+  "press to assign" — no config files.
+- **No BIOS hunting.** The BIOS is emulated, so games boot from just the ROM.
+- **One app, everywhere.** The same emulator in your browser and as a native
+  desktop window — your library follows.
 - **Genuinely open source.** MIT / Apache-2.0, hackable end to end, from the ARM
   decoder to the CSS.
 
-## What works today
+## Features
 
-- **Full CPU** — ARM7TDMI: complete ARM + Thumb instruction sets, banked
-  registers, pipeline, exceptions.
-- **Full graphics** — every PPU mode (tiled 0–2, bitmap 3–5), sprites (regular +
-  affine), windows, mosaic, and alpha/brighten/darken blending.
-- **Sound** — the four PSG channels plus Direct Sound (the PCM path most
-  commercial games use for music), mixed and resampled to your browser's audio.
-- **DMA, timers, interrupts** — the full machinery real game loops depend on.
-- **Cartridge saves** — SRAM and Flash (64K/128K), auto-detected and persisted
-  per cartridge, so in-game saves survive reloads.
-- **Save states** — snapshot and restore anywhere.
-- **Configurable controls** — remap every button to any key **or** gamepad
-  button from Settings, with live "press to assign" rebinding that persists.
-- **Library UI** — IndexedDB-backed game storage, cover art, clean titles,
-  inline rename, favorites, recently-played, drag-and-drop import, search.
+- **Runs commercial games** — Pokémon FireRed, Ruby, and homebrew alike.
+- **Full graphics & sound** — every background/sprite mode, blending effects, and
+  the PSG + Direct Sound audio games use for music.
+- **Cartridge saves** — in-game saves (SRAM / Flash) persist per game across
+  reloads.
+- **Save states** — snapshot and jump back anytime.
+- **Library** — cover art, clean titles, inline rename, favorites,
+  recently-played, drag-and-drop import, search.
+- **Configurable controls** — keyboard + gamepad, remappable and persisted.
+- **Native desktop app** — a real window with a **File → Open ROM…** menu.
 
-## Using Pocket
+## The bigger idea
 
-### In the browser (today)
+Pocket plays Game Boy Advance today, but that's the starting point, not the
+destination. The architecture is deliberately split: a **pure emulator core**
+with zero UI knowledge, behind a **system-agnostic library and player**. That
+separation is what makes the north-star possible —
+
+> **One beautiful app for your whole retro collection.** Game Boy / Color, NES,
+> SNES, Genesis, and beyond — each as an additional core slotting into the same
+> library, the same save-state system, the same controls, the same polish.
+> Not a different dated emulator per console; one modern home for all of them.
+
+Getting there means growing the shared shell (multi-system library, per-core
+settings, a unified save format) while adding cores one at a time. GBA proves the
+shape; the rest is repetition with a good foundation.
+
+## Roadmap
+
+**Done**
+- ✅ Full GBA emulation — CPU, graphics, sound, DMA/timers/interrupts
+- ✅ Cartridge saves + save states
+- ✅ Modern web frontend — library, cover art, redesigned UI
+- ✅ Configurable keyboard + gamepad controls
+- ✅ Native desktop app (Tauri) with cross-platform release builds
+
+**Next**
+- 🔜 Richer gamepad support — per-model tuning (PS5 DualSense, Xbox, Switch Pro)
+- 🔜 Hardening — Content-Security-Policy, code signing / notarization (see
+  [Notes on installers](#notes-on-installers))
+- 🔜 EEPROM saves; cartridge prefetch & cycle-accurate timing polish
+
+**Exploring**
+- 💡 **Multi-system support** — additional cores (GB/GBC, NES, SNES…) under the
+  same shell
+- 💡 Cloud-syncable saves, cartridge fast-forward, shaders / display filters
+- 💡 A unified save-state format shared across cores
+
+**Pocket is under active development** — continuous improvements to accuracy,
+performance, and the interface. Issues and pull requests are welcome.
+
+## Run it yourself
+
+**In the browser:**
 
 ```sh
 npm install
 npm run wasm     # build the Rust core → WebAssembly (needs wasm-pack)
-npm run dev      # start the dev server, then open the printed localhost URL
+npm run dev      # open the printed localhost URL
 ```
 
-Then just **drag a `.gba` file onto the window** (or use *Add ROM*). Your games
-and saves stay in your browser — nothing is uploaded anywhere.
-
-**Default controls**
-
-| Button | Key |
-|--------|-----|
-| D-Pad | Arrow keys |
-| A / B | X / Z |
-| L / R | A / S |
-| Start / Select | Enter / Backspace |
-
-**Gamepad** is supported too — connect a controller and it maps automatically
-using the standard layout (face buttons → A/B, shoulders → L/R, d-pad or stick →
-directions). Every binding, keyboard and gamepad alike, is remappable from
-**Settings → Controls**: click a slot, press the key or button you want.
-
-*Gamepad support is still being polished — richer mapping and per-model tuning
-for modern controllers (PS5 DualSense, Xbox Series, Switch Pro) is on the way.*
-
-### As a desktop app
-
-Pocket ships as a native desktop app built with [Tauri](https://tauri.app) — a
-small window wrapping the same emulator, with a native **File → Open ROM…** menu.
-
-**Download:** grab the installer for your platform from the
-[Releases page](../../releases) — `.dmg` (macOS), `.msi` (Windows), or
-`.AppImage` / `.deb` (Linux). No terminal required.
-
-**Run from source:**
+**As a desktop app:**
 
 ```sh
-npm install
 npm run tauri dev      # native window with hot reload
-npm run tauri build    # produce an installer for your current OS
+npm run tauri build    # build an installer for your current OS
 ```
 
-`tauri build` bundles the app for whatever OS you run it on; the
-[release workflow](.github/workflows/release.yml) builds all three platforms in
-CI and attaches the installers to a GitHub Release (see *Releasing* below).
+Then drag a `.gba` onto the window, use **Add ROM**, or (desktop)
+**File → Open ROM…**.
 
-> **Bring your own ROMs.** Pocket ships no games. Use homebrew, or dumps of
-> cartridges you own.
+**Default controls** — D-Pad: arrows · A/B: X/Z · L/R: A/S · Start/Select:
+Enter/Backspace. All remappable in **Settings → Controls**.
 
-## Stack
+## Notes on installers
 
-| Layer | Technology |
-|-------|-----------|
-| Emulator core | **Rust** (`core/`, crate `gba-core`) — zero UI dependencies, 121 tests |
-| Core → web | **WebAssembly** via `wasm-bindgen` / `wasm-pack` (`web/`) |
-| Frontend | **React + TypeScript**, built with **Vite** |
-| Storage | **IndexedDB** (ROMs + library), `localStorage` (save states + battery) |
-| Audio | **Web Audio API** (resampled from the core's 32768 Hz stream) |
+The release installers are **not code-signed yet**, so your OS will warn you the
+first time you open the app. It's safe — signing just costs money we haven't set
+up:
+
+- **macOS:** right-click the app → **Open** → **Open** (or *System Settings →
+  Privacy & Security → Open Anyway*).
+- **Windows:** on the SmartScreen prompt, click **More info → Run anyway**.
+
+For the same reason the desktop webview currently ships without a strict
+Content-Security-Policy. Both signing and CSP hardening are on the roadmap.
+
+## Under the hood
+
+| Layer | Tech |
+|-------|------|
+| Emulator core | **Rust** (`core/`) — pure, no UI, ~120 tests |
+| Core → web | **WebAssembly** (`wasm-bindgen` / `wasm-pack`) |
+| Interface | **React + TypeScript**, built with **Vite** |
 | Desktop | **Tauri v2** (`src-tauri/`) — native window, menu, file dialog |
-| Hardware reference | [GBATEK](https://problemkaputt.de/gbatek.htm) |
+| Storage | **IndexedDB** (games) + `localStorage` (saves) |
 
-## Project layout
+The core is a from-scratch ARM7TDMI implementation (ARM + Thumb), a full PPU,
+APU, DMA, timers, and interrupt controller, referenced against
+[GBATEK](https://problemkaputt.de/gbatek.htm). For exactly what's cycle-accurate
+and what's approximated, see **[docs/accuracy.md](docs/accuracy.md)**.
+
+<details>
+<summary>Repo layout & building the core</summary>
 
 ```
-core/            # gba-core — the emulator, pure Rust, no UI
-├── src/
-│   ├── cpu/     # ARM7TDMI: register file/banking, ARM + Thumb decoders
-│   ├── memory.rs, io.rs        # bus, full memory map, I/O registers, timing
-│   ├── ppu.rs                  # backgrounds, sprites, windows, blending
-│   ├── apu.rs, dma.rs, timers.rs
-│   ├── bios.rs, save.rs        # BIOS HLE (incl. decompression SWIs), SRAM/Flash
-│   └── system.rs               # ties it together, run_frame loop
-└── tests/       # 121 self-contained tests + headless ROM harness
-
-web/             # WebAssembly bindings (wasm-bindgen)
-src/             # React + TypeScript frontend
-├── components/  # Sidebar, Library, GameCard, Console, Settings, …
-└── lib/         # gba.ts (runner), library.ts (IndexedDB), desktop.ts (Tauri bridge)
-
-src-tauri/       # Tauri v2 desktop shell — native window, menu, read_rom command
+core/       # gba-core — the emulator, pure Rust, no UI
+web/        # WebAssembly bindings
+src/        # React + TypeScript frontend
+src-tauri/  # Tauri v2 desktop shell
+docs/       # design specs, accuracy notes, screenshots
 ```
 
-## Roadmap
-
-| Status | Item |
-|:------:|------|
-| ✅ | ARM7TDMI CPU (ARM + Thumb, banking, pipeline, exceptions) |
-| ✅ | Memory/bus, I/O, waitstate timing, BIOS HLE + LLE |
-| ✅ | PPU — tiled + bitmap modes, sprites, affine, windows, mosaic, blending |
-| ✅ | DMA, timers, interrupts |
-| ✅ | APU — PSG channels + Direct Sound |
-| ✅ | Web frontend — library, covers, save states, saves, redesigned UI |
-| ✅ | Configurable controls — keyboard + gamepad remapping |
-| ✅ | Tauri desktop shell — native window + File → Open ROM |
-| ✅ | Cross-platform release builds (macOS / Windows / Linux) via CI |
-| 🔜 | Richer gamepad support — per-model tuning for PS5, Xbox, Switch Pro |
-| 🔜 | Content-Security-Policy hardening, code signing / notarization |
-| 💡 | EEPROM saves, cartridge prefetch, cycle-accurate DMA stalls |
-
-**Pocket is under active development** — expect continuous improvements to
-accuracy, performance, and the interface. Issues and pull requests are welcome.
-
-## Releasing
-
-Desktop installers are built by CI, not by hand — each OS's installer must be
-compiled on that OS, so [`.github/workflows/release.yml`](.github/workflows/release.yml)
-runs the build on macOS, Windows, and Linux runners and uploads the results to a
-GitHub Release. To cut a release:
+The Rust core is testable on its own, no browser or ROM required:
 
 ```sh
-npm version patch        # bump version (also update src-tauri/tauri.conf.json)
-git push
-git tag v0.1.0
-git push origin v0.1.0   # tag push triggers the release workflow
+cargo test                                        # ~120 tests
+cargo run --example render_scene -- scene.bmp     # render a tiled scene to a BMP
+cargo run --example render_rom -- rom.gba out.bmp # dump a real ROM's first frame
 ```
 
-The workflow builds all three platforms and creates a **draft** GitHub Release
-with the `.dmg`, `.msi`, and `.AppImage` / `.deb` attached; review it and click
-publish. Users then download their installer from the
-[Releases page](../../releases). You can also trigger a build manually from the
-repo's **Actions** tab (*Release* workflow → *Run workflow*).
+**Cutting a release:** push a version tag (e.g. `git tag v0.1.0 && git push
+origin v0.1.0`) and [`.github/workflows/release.yml`](.github/workflows/release.yml)
+builds all three platforms and drafts a GitHub Release with the installers
+attached. Review it and publish.
 
-## Building & testing the core
+**Test ROMs** aren't redistributed; drop `arm.gba` / `thumb.gba` / `hello.gba`
+from [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests) into
+`core/tests/roms/` and the harness picks them up automatically.
 
-The Rust core is fully testable on its own, no browser or ROM required:
+</details>
 
-```sh
-cargo test                                   # 121 tests
-cargo run --example render_scene -- scene.bmp   # render a tiled scene to a BMP
-cargo run --example render_rom -- rom.gba out.bmp   # dump a real ROM's first frame
-```
-
-The suite covers ALU flags and barrel-shifter edge cases, pipeline-visible PC
-offsets, LDM/STM quirks, mode banking and interworking, the I/O registers and
-waitstate timing, BIOS HLE routines, PPU rendering and display IRQs, DMA and
-timers, and the audio sample stream.
-
-### Optional test ROMs
-
-ROMs are not redistributed here. Drop these into `core/tests/roms/` and the
-harness picks them up automatically (tests skip with a notice otherwise):
-
-| File | Source | What it gives us |
-|------|--------|------------------|
-| `arm.gba`, `thumb.gba` | [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests) | Real pass/fail assertions — on failure the ROM parks with the failing test number in `r12` |
-| `hello.gba` | jsmolka | Boots and renders "Hello world!" in mode 4 — a quick end-to-end smoke test |
-
-No BIOS image is required; the core boots ROMs from the post-BIOS state and
-emulates BIOS SWIs at a high level. Load a real BIOS via `Memory::load_bios` for
-low-level BIOS execution.
-
-## License
+## License & credits
 
 Dual-licensed under **MIT** or **Apache-2.0**, at your option.
 
-## Credits & references
-
-- [GBATEK](https://problemkaputt.de/gbatek.htm) — the definitive GBA hardware
-  reference.
-- [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests) — CPU test ROMs.
-- [libretro thumbnails](https://thumbnails.libretro.com) — community cover-art
-  server used for library art at runtime.
-
----
-
-## Appendix — accuracy notes & trade-offs
-
-Deeper notes on what each subsystem models exactly and what it approximates, for
-the curious (and for future-me).
-
-### CPU
-
-- **Pipeline**: modeled as a two-slot fetch queue — every architecturally
-  visible effect is correct (PC reads +8/+4, stores of PC +12, flush on branch,
-  stale opcodes for self-modifying code).
-- **ARM7 quirks implemented**: misaligned LDR/LDRH rotation, LDRSH→LDRSB at odd
-  addresses, LDM/STM empty-list and base-in-list behavior, user-bank transfers
-  (S bit), `MOV pc`/`POP {pc}` non-interworking on ARMv4T.
-- **Deliberately unpredictable-as-benign**: MSR cannot flip the T bit, invalid
-  mode writes keep the old mode, ARMv5-only encodings (BLX, LDRD) take the
-  undefined trap or act as no-ops per hardware.
-
-### Memory / bus
-
-- **Cycle counts** are driven by the bus: memory-access cycles come from the
-  [`timing`](core/src/timing.rs) waitstate model; instruction handlers add only
-  internal (I-)cycles. The cartridge **prefetch buffer** is not modeled yet, so
-  ROM-heavy code runs a few percent *slow* (a conservative error).
-- **BIOS**: HLE by default (no copyrighted image needed). `Div`/`Sqrt`/`CpuSet`/
-  `CpuFastSet`/`RegisterRamReset` are exact; `ArcTan`/`ArcTan2` use the
-  mathematically correct result; `IntrWait`/`VBlankIntrWait` halt until an
-  interrupt; LZ77/RLE/Huffman/diff-unfilter/BitUnpack decompression SWIs are
-  implemented (needed by real games).
-- **8-bit-write quirks**: palette and BG-VRAM byte writes duplicate across the
-  halfword; OAM ignores byte writes; the BG/OBJ VRAM boundary is mode-dependent.
-
-### PPU
-
-- Covers the full tiled/bitmap feature set: bitmap modes 3–5; affine BG2/BG3
-  with per-scanline reference-point updates and wrap/transparent overflow;
-  affine sprites including double-size; BG and OBJ mosaic; windows (WIN0/WIN1/OBJ
-  window); and the color special effects — alpha blending, brighten, darken, and
-  OBJ semi-transparency.
-- **Compositing** renders each layer into its own scanline buffer, then per
-  pixel picks the front-most and second layers (after window masking) and
-  applies the blend — the approach that makes two-target blending clean, at the
-  cost of five full-width buffers per line.
-- **Display timing** is exact at line granularity (1232 cycles/line, 228 lines,
-  VBlank at 160); VBlank/HBlank/VCount IRQs fire through the real interrupt
-  controller. Sub-line dot timing is modeled only enough to place the HBlank flag.
-- Affine-sprite mosaic is applied in texture space (a close approximation of
-  hardware's screen-space mosaic).
-
-### APU
-
-- The four PSG channels — two square (channel 1 with frequency sweep), the wave
-  channel, and the noise LFSR — each with volume envelope and length counter,
-  clocked by a 512 Hz frame sequencer.
-- **Direct Sound** A/B: two 8-bit PCM FIFOs clocked by a timer overflow
-  (SOUNDCNT_H selects the timer), refilled by DMA1/DMA2 on the "special"
-  start-timing when half-empty — what most commercial games use for music.
-- Everything mixes to stereo and resamples to 32768 Hz. Mixing levels are a
-  reasonable approximation, not calibrated against hardware's exact DAC/SOUNDBIAS
-  response.
-
-### DMA / timers / interrupts
-
-- **DMA**: all four channels with immediate/VBlank/HBlank/special start timing,
-  every address mode, 16/32-bit units, repeat, and completion IRQ. Transfers run
-  atomically between CPU instructions; DMA does not yet *steal* CPU cycles
-  (deferred to a cycle-accurate pass).
-- **Timers**: all four with the four prescalers, cascade (count-up) mode, and the
-  overflow interrupt, accurate to a few-cycle granularity.
-- **Interrupts** from the PPU, timers, and DMA all flow through the real
-  `IE`/`IF`/`IME` controller into the CPU.
-
-### Saves
-
-- **SRAM** (32K) and **Flash** (64K Panasonic / 128K Sanyo, with the full command
-  protocol, chip ID, sector erase, and bank switching) are auto-detected from the
-  ROM's save-type marker and persisted per cartridge. **EEPROM** is not yet
-  implemented.
+- [GBATEK](https://problemkaputt.de/gbatek.htm) — the definitive GBA hardware reference
+- [jsmolka/gba-tests](https://github.com/jsmolka/gba-tests) — CPU test ROMs
+- [libretro thumbnails](https://thumbnails.libretro.com) — community cover-art server
