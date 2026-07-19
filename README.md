@@ -3,8 +3,8 @@
 **Pocket** is an open-source Game Boy Advance emulator built around a
 cycle-aware ARM7TDMI core written in Rust, compiled to WebAssembly, and wrapped
 in a modern, deliberately-designed interface. It runs commercial games
-(Pokémon FireRed, Ruby, …) and public-domain homebrew alike, right in the
-browser today and as a native desktop app soon.
+(Pokémon FireRed, Ruby, …) and public-domain homebrew alike — right in the
+browser, and as a native desktop app for macOS, Windows, and Linux.
 
 > Most GBA emulators are excellent at accuracy and stuck in 2008 at
 > presentation. Pocket's goal is to keep the accuracy and give the whole thing
@@ -79,11 +79,26 @@ directions). Every binding, keyboard and gamepad alike, is remappable from
 *Gamepad support is still being polished — richer mapping and per-model tuning
 for modern controllers (PS5 DualSense, Xbox Series, Switch Pro) is on the way.*
 
-### As a desktop app (coming soon)
+### As a desktop app
 
-A [Tauri](https://tauri.app) shell will package Pocket as a small native app for
-macOS, Windows, and Linux. Once it lands, this section will cover downloading a
-release and opening ROMs directly — no terminal required.
+Pocket ships as a native desktop app built with [Tauri](https://tauri.app) — a
+small window wrapping the same emulator, with a native **File → Open ROM…** menu.
+
+**Download:** grab the installer for your platform from the
+[Releases page](../../releases) — `.dmg` (macOS), `.msi` (Windows), or
+`.AppImage` / `.deb` (Linux). No terminal required.
+
+**Run from source:**
+
+```sh
+npm install
+npm run tauri dev      # native window with hot reload
+npm run tauri build    # produce an installer for your current OS
+```
+
+`tauri build` bundles the app for whatever OS you run it on; the
+[release workflow](.github/workflows/release.yml) builds all three platforms in
+CI and attaches the installers to a GitHub Release (see *Releasing* below).
 
 > **Bring your own ROMs.** Pocket ships no games. Use homebrew, or dumps of
 > cartridges you own.
@@ -97,7 +112,7 @@ release and opening ROMs directly — no terminal required.
 | Frontend | **React + TypeScript**, built with **Vite** |
 | Storage | **IndexedDB** (ROMs + library), `localStorage` (save states + battery) |
 | Audio | **Web Audio API** (resampled from the core's 32768 Hz stream) |
-| Desktop *(planned)* | **Tauri** |
+| Desktop | **Tauri v2** (`src-tauri/`) — native window, menu, file dialog |
 | Hardware reference | [GBATEK](https://problemkaputt.de/gbatek.htm) |
 
 ## Project layout
@@ -116,7 +131,9 @@ core/            # gba-core — the emulator, pure Rust, no UI
 web/             # WebAssembly bindings (wasm-bindgen)
 src/             # React + TypeScript frontend
 ├── components/  # Sidebar, Library, GameCard, Console, Settings, …
-└── lib/         # gba.ts (runner), library.ts (IndexedDB), gamedb.ts (titles/art)
+└── lib/         # gba.ts (runner), library.ts (IndexedDB), desktop.ts (Tauri bridge)
+
+src-tauri/       # Tauri v2 desktop shell — native window, menu, read_rom command
 ```
 
 ## Roadmap
@@ -130,12 +147,34 @@ src/             # React + TypeScript frontend
 | ✅ | APU — PSG channels + Direct Sound |
 | ✅ | Web frontend — library, covers, save states, saves, redesigned UI |
 | ✅ | Configurable controls — keyboard + gamepad remapping |
+| ✅ | Tauri desktop shell — native window + File → Open ROM |
+| ✅ | Cross-platform release builds (macOS / Windows / Linux) via CI |
 | 🔜 | Richer gamepad support — per-model tuning for PS5, Xbox, Switch Pro |
-| 🔜 | Tauri desktop shell |
+| 🔜 | Content-Security-Policy hardening, code signing / notarization |
 | 💡 | EEPROM saves, cartridge prefetch, cycle-accurate DMA stalls |
 
 **Pocket is under active development** — expect continuous improvements to
 accuracy, performance, and the interface. Issues and pull requests are welcome.
+
+## Releasing
+
+Desktop installers are built by CI, not by hand — each OS's installer must be
+compiled on that OS, so [`.github/workflows/release.yml`](.github/workflows/release.yml)
+runs the build on macOS, Windows, and Linux runners and uploads the results to a
+GitHub Release. To cut a release:
+
+```sh
+npm version patch        # bump version (also update src-tauri/tauri.conf.json)
+git push
+git tag v0.1.0
+git push origin v0.1.0   # tag push triggers the release workflow
+```
+
+The workflow builds all three platforms and creates a **draft** GitHub Release
+with the `.dmg`, `.msi`, and `.AppImage` / `.deb` attached; review it and click
+publish. Users then download their installer from the
+[Releases page](../../releases). You can also trigger a build manually from the
+repo's **Actions** tab (*Release* workflow → *Run workflow*).
 
 ## Building & testing the core
 
