@@ -1,4 +1,5 @@
 import { Controls } from "../lib/controls";
+import { ControlsSettings } from "./ControlsSettings";
 
 interface Props {
   controls: Controls;
@@ -6,7 +7,6 @@ interface Props {
 }
 
 export function Settings({ controls, onControlsChange }: Props) {
-  void controls; void onControlsChange;
   return (
     <section className="settings view">
       <div className="hero" style={{ minHeight: 140 }}>
@@ -16,24 +16,7 @@ export function Settings({ controls, onControlsChange }: Props) {
         </div>
       </div>
 
-      <div className="panel">
-        <h3>Controls</h3>
-        {[
-          ["D-Pad", "Arrow keys"],
-          ["A / B", "X / Z"],
-          ["L / R", "A / S"],
-          ["Start / Select", "Enter / Backspace"],
-        ].map(([a, b]) => (
-          <div className="row" key={a}>
-            <span>{a}</span>
-            <kbd>{b}</kbd>
-          </div>
-        ))}
-        <div className="row">
-          <span>Remapping &amp; gamepad</span>
-          <span style={{ color: "var(--violet-bright)" }}>Coming soon</span>
-        </div>
-      </div>
+      <ControlsSettings controls={controls} onChange={onControlsChange} />
 
       <div className="panel">
         <h3>About</h3>

@@ -637,6 +637,56 @@ body {
   border-top: none;
 }
 
+.controls__status {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--faint);
+  padding-bottom: 12px;
+}
+
+.bind-group {
+  display: flex;
+  gap: 8px;
+}
+
+.bind {
+  min-width: 76px;
+  font-family: inherit;
+  font-weight: 700;
+  font-size: 12px;
+  color: var(--ink);
+  background: rgba(150, 130, 255, 0.12);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 7px;
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.bind:hover {
+  border-color: var(--violet);
+  color: var(--ink);
+}
+
+.bind.is-listening {
+  color: #fff;
+  background: var(--violet);
+  border-color: var(--violet-bright);
+  animation: bind-pulse 1s ease-in-out infinite;
+}
+
+@keyframes bind-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.5); }
+  50% { box-shadow: 0 0 0 4px rgba(139, 92, 246, 0); }
+}
+
+.controls__actions {
+  margin-top: 16px;
+  display: flex;
+  justify-content: flex-end;
+}
+
 /* ==================================================================== player */
 .player {
   height: 100%;
