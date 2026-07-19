@@ -1,4 +1,12 @@
-export function Settings() {
+import { Controls } from "../lib/controls";
+
+interface Props {
+  controls: Controls;
+  onControlsChange: (next: Controls) => void;
+}
+
+export function Settings({ controls, onControlsChange }: Props) {
+  void controls; void onControlsChange;
   return (
     <section className="settings view">
       <div className="hero" style={{ minHeight: 140 }}>
