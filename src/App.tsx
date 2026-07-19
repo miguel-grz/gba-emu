@@ -93,11 +93,16 @@ export function App() {
 
   // Native desktop menu (File > Open ROM). No-op on the web.
   useEffect(() => {
+    let active = true;
     let cleanup = () => {};
     initDesktop(importRom).then((fn) => {
-      cleanup = fn;
+      if (active) cleanup = fn;
+      else fn();
     });
-    return () => cleanup();
+    return () => {
+      active = false;
+      cleanup();
+    };
   }, [importRom]);
 
   const renameOne = useCallback(

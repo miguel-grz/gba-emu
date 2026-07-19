@@ -34,8 +34,12 @@ export async function initDesktop(
     if (!selected) return;
     const paths = Array.isArray(selected) ? selected : [selected];
     for (const path of paths) {
-      const buffer = (await invoke("read_rom", { path })) as ArrayBuffer;
-      onOpenRom(baseName(path), new Uint8Array(buffer));
+      try {
+        const buffer = (await invoke("read_rom", { path })) as ArrayBuffer;
+        onOpenRom(baseName(path), new Uint8Array(buffer));
+      } catch (e) {
+        console.error(`Failed to read ROM: ${path}`, e);
+      }
     }
   });
 
