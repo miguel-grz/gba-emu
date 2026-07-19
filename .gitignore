@@ -25,3 +25,6 @@ core/tests/roms/
 # BIOS dumps must never be committed
 *.bin
 bios*.rom
+
+# Local Claude Code config
+.claude/
