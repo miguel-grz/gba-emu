@@ -1,6 +1,6 @@
 # Controls Configuration Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Task-by-task implementation plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Let the player remap every GBA button to a keyboard key and a gamepad button from Settings, persisted and applied live.
 

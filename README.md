@@ -44,6 +44,8 @@ is a player that treats your library like a modern app treats your content:
 - **Cartridge saves** — SRAM and Flash (64K/128K), auto-detected and persisted
   per cartridge, so in-game saves survive reloads.
 - **Save states** — snapshot and restore anywhere.
+- **Configurable controls** — remap every button to any key **or** gamepad
+  button from Settings, with live "press to assign" rebinding that persists.
 - **Library UI** — IndexedDB-backed game storage, cover art, clean titles,
   inline rename, favorites, recently-played, drag-and-drop import, search.
 
@@ -69,7 +71,13 @@ and saves stay in your browser — nothing is uploaded anywhere.
 | L / R | A / S |
 | Start / Select | Enter / Backspace |
 
-*(Remappable controls and gamepad support are on the roadmap.)*
+**Gamepad** is supported too — connect a controller and it maps automatically
+using the standard layout (face buttons → A/B, shoulders → L/R, d-pad or stick →
+directions). Every binding, keyboard and gamepad alike, is remappable from
+**Settings → Controls**: click a slot, press the key or button you want.
+
+*Gamepad support is still being polished — richer mapping and per-model tuning
+for modern controllers (PS5 DualSense, Xbox Series, Switch Pro) is on the way.*
 
 ### As a desktop app (coming soon)
 
@@ -121,7 +129,8 @@ src/             # React + TypeScript frontend
 | ✅ | DMA, timers, interrupts |
 | ✅ | APU — PSG channels + Direct Sound |
 | ✅ | Web frontend — library, covers, save states, saves, redesigned UI |
-| 🔜 | Configurable controls + gamepad support |
+| ✅ | Configurable controls — keyboard + gamepad remapping |
+| 🔜 | Richer gamepad support — per-model tuning for PS5, Xbox, Switch Pro |
 | 🔜 | Tauri desktop shell |
 | 💡 | EEPROM saves, cartridge prefetch, cycle-accurate DMA stalls |
 
