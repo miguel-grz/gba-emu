@@ -43,10 +43,10 @@ export function ControlsSettings({ controls, onChange }: Props) {
       gamepad: { ...controls.gamepad },
     };
     if (slot === "keyboard") {
-      for (const b of ALL_BUTTONS) if (next.keyboard[b] === value) delete next.keyboard[b];
+      for (const b of ALL_BUTTONS) if (next.keyboard[b] === value) next.keyboard[b] = "";
       next.keyboard[button] = value as string;
     } else {
-      for (const b of ALL_BUTTONS) if (next.gamepad[b] === value) delete next.gamepad[b];
+      for (const b of ALL_BUTTONS) if (next.gamepad[b] === value) next.gamepad[b] = -1;
       next.gamepad[button] = value as number;
     }
     onChange(next);
@@ -57,7 +57,7 @@ export function ControlsSettings({ controls, onChange }: Props) {
     if (!listening || listening.slot !== "keyboard") return;
     const onKey = (e: KeyboardEvent) => {
       e.preventDefault();
-      if (e.code !== "Escape") assign(listening.button, "keyboard", e.code);
+      if (e.code && e.code !== "Escape") assign(listening.button, "keyboard", e.code);
       setListening(null);
     };
     window.addEventListener("keydown", onKey);
@@ -104,21 +104,21 @@ export function ControlsSettings({ controls, onChange }: Props) {
       <div className="controls__status">
         {padName ? `🎮 ${padName}` : "No gamepad connected"}
       </div>
-      {BUTTON_META.map(({ button, label }) => (
-        <div className="row" key={button}>
-          <span>{label}</span>
-          <div className="bind-group">
-            {cell(button, "keyboard", keyLabel(controls.keyboard[button] ?? ""))}
-            {cell(
-              button,
-              "gamepad",
-              controls.gamepad[button] === undefined
-                ? "—"
-                : padLabel(controls.gamepad[button]),
-            )}
+      {BUTTON_META.map(({ button, label }) => {
+        const kb = controls.keyboard[button];
+        const kbText = kb ? keyLabel(kb) : "—";
+        const gp = controls.gamepad[button];
+        const gpText = gp === undefined || gp < 0 ? "—" : padLabel(gp);
+        return (
+          <div className="row" key={button}>
+            <span>{label}</span>
+            <div className="bind-group">
+              {cell(button, "keyboard", kbText)}
+              {cell(button, "gamepad", gpText)}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
       <div className="controls__actions">
         <button className="btn btn--ghost" onClick={() => onChange(DEFAULT_CONTROLS)}>
           Restore defaults

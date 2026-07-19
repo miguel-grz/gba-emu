@@ -54,6 +54,7 @@ export class InputManager {
   }
 
   private onKeyDown = (e: KeyboardEvent) => {
+    if (e.repeat) return;
     const b = this.keyIndex.get(e.code);
     if (b === undefined) return;
     e.preventDefault();
@@ -75,7 +76,7 @@ export class InputManager {
       const now = new Set<Button>();
       for (const b of ALL_BUTTONS) {
         const idx = this.controls.gamepad[b];
-        if (idx !== undefined && pad.buttons[idx]?.pressed) now.add(b);
+        if (idx !== undefined && idx >= 0 && pad.buttons[idx]?.pressed) now.add(b);
       }
       // Analog stick as a d-pad fallback, so a stick works even without a
       // digital d-pad binding.
