@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { DEFAULT_KEYMAP, ensureWasm, generateThumbnail, GbaRunner } from "./lib/gba";
+import { ensureWasm, generateThumbnail, GbaRunner } from "./lib/gba";
 import { load, store } from "./lib/persist";
 import { coverUrl, resolveTitle } from "./lib/gamedb";
 import {
@@ -14,6 +14,8 @@ import {
   setThumbnail,
   toggleFavorite,
 } from "./lib/library";
+import { Controls, loadControls, saveControls } from "./lib/controls";
+import { InputManager } from "./lib/input";
 import { Sidebar, Section } from "./components/Sidebar";
 import { Library } from "./components/Library";
 import { Console } from "./components/Console";
@@ -36,6 +38,13 @@ export function App() {
   const [flash, setFlash] = useState("");
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const runnerRef = useRef<GbaRunner | null>(null);
+  const [controls, setControls] = useState<Controls>(() => loadControls());
+  const inputRef = useRef<InputManager | null>(null);
+
+  const updateControls = useCallback((next: Controls) => {
+    saveControls(next);
+    setControls(next);
+  }, []);
 
   const refreshGames = useCallback(async () => {
     try {
@@ -181,27 +190,27 @@ export function App() {
     const persistBattery = () => store(batteryKey, runner.batteryData());
     const batteryTimer = window.setInterval(persistBattery, 5000);
 
-    const onKey = (pressed: boolean) => (e: KeyboardEvent) => {
-      const button = DEFAULT_KEYMAP[e.code];
-      if (button === undefined) return;
-      e.preventDefault();
+    const input = new InputManager(controls, (button, pressed) => {
       runner.resumeAudio();
       runner.setButton(button, pressed);
-    };
-    const down = onKey(true);
-    const up = onKey(false);
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", up);
+    });
+    input.attach();
+    inputRef.current = input;
 
     return () => {
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", up);
+      input.detach();
+      inputRef.current = null;
       window.clearInterval(batteryTimer);
       persistBattery();
       runner.stop();
       runnerRef.current = null;
     };
   }, [playing]);
+
+  // Apply control edits to a running game without restarting it.
+  useEffect(() => {
+    inputRef.current?.setControls(controls);
+  }, [controls]);
 
   const showFlash = useCallback((msg: string) => {
     setFlash(msg);
@@ -253,7 +262,7 @@ export function App() {
             onLoad={loadState}
           />
         ) : section === "settings" ? (
-          <Settings />
+          <Settings controls={controls} onControlsChange={updateControls} />
         ) : (
           <Library
             section={section}

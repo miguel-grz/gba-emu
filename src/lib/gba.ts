@@ -53,20 +53,6 @@ export const Button = {
 } as const;
 export type Button = (typeof Button)[keyof typeof Button];
 
-/** Default keyboard → GBA mapping. */
-export const DEFAULT_KEYMAP: Record<string, Button> = {
-  KeyX: Button.A,
-  KeyZ: Button.B,
-  Backspace: Button.Select,
-  Enter: Button.Start,
-  ArrowRight: Button.Right,
-  ArrowLeft: Button.Left,
-  ArrowUp: Button.Up,
-  ArrowDown: Button.Down,
-  KeyS: Button.R,
-  KeyA: Button.L,
-};
-
 /** Drives one loaded cartridge: the frame loop, video, input and audio. */
 export class GbaRunner {
   private emu: Emulator;

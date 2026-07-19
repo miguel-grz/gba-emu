@@ -21,3 +21,6 @@ core/tests/roms/
 # BIOS dumps must never be committed
 *.bin
 bios*.rom
+
+# subagent-driven-development scratch
+.superpowers/
